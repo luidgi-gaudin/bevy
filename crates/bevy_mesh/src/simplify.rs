@@ -363,26 +363,52 @@ fn simplify(
                 ..adjacency_offsets[position as usize + 1] as usize]
         };
 
+        // The positions of the corners of each triangle.
+        let triangle_positions: Vec<[u32; 3]> = triangles
+            .iter()
+            .map(|triangle| triangle.map(position_of_vertex))
+            .collect();
+        // The position that follows `position` in a triangle.
+        let next_position = |triangle: u32, position: u32| {
+            let corners = triangle_positions[triangle as usize];
+            let i = corners.iter().position(|&corner| corner == position)?;
+            Some(corners[(i + 1) % 3])
+        };
+        // The number of triangles with an edge going from `a` to `b`.
+        let half_edge_count = |a: u32, b: u32| {
+            triangles_around(a)
+                .iter()
+                .filter(|&&triangle| next_position(triangle, a) == Some(b))
+                .count()
+        };
+        let has_half_edge = |a: u32, b: u32| {
+            triangles_around(a)
+                .iter()
+                .any(|&triangle| next_position(triangle, a) == Some(b))
+        };
+
         // Classify positions from the edges between them.
-        let mut half_edges = HashMap::<(u32, u32), u32>::default();
-        for triangle in &triangles {
-            let [a, b, c] = triangle.map(position_of_vertex);
-            for edge in [(a, b), (b, c), (c, a)] {
-                *half_edges.entry(edge).or_default() += 1;
-            }
-        }
         let mut locked = vec![false; position_count];
         let mut border_edges_out = vec![0u32; position_count];
         let mut border_edges_in = vec![0u32; position_count];
-        for (&(a, b), &count) in &half_edges {
-            if count > 1 {
-                // An edge used by more than two triangles.
-                locked[a as usize] = true;
-                locked[b as usize] = true;
-            }
-            if !half_edges.contains_key(&(b, a)) {
-                border_edges_out[a as usize] += 1;
-                border_edges_in[b as usize] += 1;
+        for position in 0..position_count as u32 {
+            for &triangle in triangles_around(position) {
+                let corners = triangle_positions[triangle as usize];
+                let Some(i) = corners.iter().position(|&corner| corner == position) else {
+                    continue;
+                };
+                let (next, previous) = (corners[(i + 1) % 3], corners[(i + 2) % 3]);
+                if half_edge_count(position, next) > 1 {
+                    // An edge used by more than two triangles.
+                    locked[position as usize] = true;
+                    locked[next as usize] = true;
+                }
+                if !has_half_edge(next, position) {
+                    border_edges_out[position as usize] += 1;
+                }
+                if !has_half_edge(position, previous) {
+                    border_edges_in[position as usize] += 1;
+                }
             }
         }
         // The number of vertices used by each position.
@@ -410,8 +436,7 @@ fn simplify(
                 _ => PositionKind::Locked,
             }
         };
-        let is_border_edge =
-            |a: u32, b: u32| half_edges.contains_key(&(a, b)) != half_edges.contains_key(&(b, a));
+        let is_border_edge = |a: u32, b: u32| has_half_edge(a, b) != has_half_edge(b, a);
         let can_collapse = |from: u32, to: u32| match kind(from) {
             PositionKind::Manifold => true,
             PositionKind::Border => is_border_edge(from, to),
@@ -420,9 +445,13 @@ fn simplify(
 
         // Find the cheapest way to collapse each edge.
         let mut collapses: Vec<(f64, u32, u32)> = Vec::new();
-        for &(a, b) in half_edges.keys() {
+        let half_edges = (0..triangle_positions.len() as u32).flat_map(|triangle| {
+            let [a, b, c] = triangle_positions[triangle as usize];
+            [(a, b), (b, c), (c, a)]
+        });
+        for (a, b) in half_edges {
             // Consider each edge once.
-            if a > b && half_edges.contains_key(&(b, a)) {
+            if a > b && has_half_edge(b, a) {
                 continue;
             }
             let quadric = {
@@ -441,7 +470,6 @@ fn simplify(
             };
             collapses.extend(collapse);
         }
-        drop(half_edges);
         collapses.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then((a.1, a.2).cmp(&(b.1, b.2))));
 
         // Collapse as many edges as possible, cheapest first. Positions around a collapsed edge
