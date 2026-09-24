@@ -21,6 +21,12 @@ extern crate alloc;
 #[cfg(target_os = "android")]
 mod android_tracing;
 mod once;
+#[cfg(all(
+    feature = "trace_puffin",
+    not(target_arch = "wasm32"),
+    not(target_os = "ios")
+))]
+mod puffin_profiler;
 
 #[cfg(feature = "trace_tracy_memory")]
 #[global_allocator]
@@ -49,6 +55,16 @@ pub use tracing::{
     warn_span, Level,
 };
 pub use tracing_subscriber;
+
+#[cfg(all(
+    feature = "trace_puffin",
+    not(target_arch = "wasm32"),
+    not(target_os = "ios")
+))]
+pub use {
+    puffin,
+    puffin_profiler::{PuffinLayer, PuffinServer, DEFAULT_PUFFIN_SERVER_ADDR},
+};
 
 use bevy_app::{App, Plugin};
 use tracing_log::LogTracer;
@@ -381,6 +397,8 @@ impl Plugin for LogPlugin {
             let subscriber = subscriber.with(chrome_layer);
             #[cfg(feature = "tracing-tracy")]
             let subscriber = subscriber.with(tracy_layer);
+            #[cfg(feature = "trace_puffin")]
+            let subscriber = subscriber.with(PuffinLayer);
             #[cfg(target_os = "android")]
             let subscriber = subscriber.with(android_tracing::AndroidLayer::default());
             finished_subscriber = subscriber;
@@ -405,6 +423,16 @@ impl Plugin for LogPlugin {
         #[cfg(feature = "tracing-tracy")]
         if self.enable_tracy {
             warn!("Tracing with Tracy is active, memory consumption will grow until a client is connected");
+        }
+
+        #[cfg(all(
+            feature = "trace_puffin",
+            not(target_arch = "wasm32"),
+            not(target_os = "ios")
+        ))]
+        {
+            puffin_profiler::start_puffin_server(app);
+            app.add_systems(bevy_app::First, puffin_profiler::puffin_new_frame);
         }
 
         match (logger_already_set, subscriber_already_set) {

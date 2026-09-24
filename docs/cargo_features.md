@@ -201,6 +201,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |touch|Touch support. Automatically enabled by `bevy_window`.|
 |trace|Tracing support|
 |trace_chrome|Tracing support, saving a file in Chrome Tracing format|
+|trace_puffin|Tracing support, recording spans with the puffin profiler and exposing a port for puffin_viewer|
 |trace_tracy|Tracing support, exposing a port for Tracy|
 |trace_tracy_memory|Tracing support, with memory profiling, exposing a port for Tracy|
 |track_location|Enables source location tracking for change detection and spawning/despawning, which can assist with debugging|

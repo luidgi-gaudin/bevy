@@ -453,6 +453,9 @@ trace_tracy = ["trace", "bevy_internal/trace_tracy", "debug"]
 # Tracing support, with memory profiling, exposing a port for Tracy
 trace_tracy_memory = ["bevy_internal/trace_tracy_memory"]
 
+# Tracing support, recording spans with the puffin profiler and exposing a port for puffin_viewer
+trace_puffin = ["trace", "bevy_internal/trace_puffin", "debug"]
+
 # Tracing support
 trace = ["bevy_internal/trace", "dep:tracing"]
 

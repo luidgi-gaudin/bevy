@@ -10,6 +10,7 @@
     - [Commandline capture](#commandline-capture-less-overhead)
     - [Using the Tracy UI](#using-the-tracy-ui)
   - [Chrome tracing format](#chrome-tracing-format)
+  - [Puffin profiler](#puffin-profiler)
   - [Perf flame graph](#perf-flame-graph)
 - [GPU runtime](#gpu-runtime)
   - [Vendor tools](#vendor-tools)
@@ -135,6 +136,19 @@ If you save more than one trace, you can compare the spans between both of them 
 After running your app a `json` file in the "chrome tracing format" will be produced. You can open this file in your browser using <https://ui.perfetto.dev>. It will look something like this:
 
 ![image](https://user-images.githubusercontent.com/2694663/141657409-6f4a3ad3-59b6-4378-95ba-66c0dafecd8e.png)
+
+### Puffin profiler
+
+[puffin](https://github.com/EmbarkStudios/puffin) is a lightweight instrumentation profiler for games made by Embark Studios. Compared to Tracy, it doesn't need a specific version of a native application: its viewer is a Rust application that shows a flame graph of the last frames, and makes it easy to find frames that are slower than the others.
+
+1. Install the viewer with `cargo install puffin_viewer`, and start it with `puffin_viewer`. It automatically connects to `127.0.0.1:8585`.
+2. Run your bevy app with `--features bevy/trace_puffin --release`.
+
+Each span of the frame is recorded as a puffin scope. For spans with fields, like the `system` spans created by Bevy for each system, the values of the fields are shown next to the scope name.
+
+The app listens for `puffin_viewer` connections on `127.0.0.1:8585` by default. Use the `PUFFIN_SERVER_ADDR` environment variable to listen on another address, for example `PUFFIN_SERVER_ADDR=0.0.0.0:8585` to profile an app running on another machine.
+
+Recording scopes can be paused and resumed at runtime with `bevy::log::puffin::set_scopes_on`, and the `bevy::log::puffin` crate can also be used to add scopes that don't go through `tracing`, with its `profile_scope!` macro.
 
 ### `perf` Flame Graph
 

@@ -11,6 +11,7 @@ keywords = ["bevy"]
 [features]
 trace = ["tracing-error"]
 trace_tracy_memory = ["dep:tracy-client"]
+trace_puffin = ["dep:puffin", "dep:puffin_http"]
 
 [dependencies]
 # bevy
@@ -33,6 +34,11 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 # https://github.com/nagisa/rust_tracy_client
 tracing-tracy = { version = "0.12.0", optional = true }
 tracy-client = { version = "0.19.0", optional = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios")))'.dependencies]
+# puffin_http uses TCP sockets, which are not available in browsers.
+puffin = { version = "0.20.0", optional = true }
+puffin_http = { version = "0.17.0", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_log-sys = "0.3.0"
