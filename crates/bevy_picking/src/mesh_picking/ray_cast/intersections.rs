@@ -109,18 +109,16 @@ pub(super) fn mesh_triangles(mesh: &Mesh) -> Option<(&[[f32; 3]], Option<&Indice
     Some((positions, mesh.try_indices().ok()))
 }
 
-/// Returns the number of triangles of a mesh with the given vertex positions and indices.
-pub(super) fn triangle_count(positions: &[[f32; 3]], indices: Option<&Indices>) -> usize {
-    match indices {
-        Some(indices) => indices.len() / 3,
-        None => positions.len() / 3,
-    }
+/// Returns the number of triangles of a triangle list with `vertex_count` vertices, and
+/// `index_count` indices if it is indexed.
+pub(super) fn triangle_count(vertex_count: usize, index_count: Option<usize>) -> usize {
+    index_count.unwrap_or(vertex_count) / 3
 }
 
 /// Builds a [`TriangleBvh`] to speed up ray casts against a mesh with the given vertex positions
 /// and indices.
 pub(super) fn build_bvh(positions: &[[f32; 3]], indices: Option<&Indices>) -> TriangleBvh {
-    let triangle_count = triangle_count(positions, indices);
+    let triangle_count = triangle_count(positions.len(), indices.map(Indices::len));
     match indices {
         Some(Indices::U16(indices)) => {
             TriangleBvh::new(triangle_count, triangle_vertices(positions, Some(indices)))
@@ -209,10 +207,7 @@ where
         Dir3::new(world_to_mesh.transform_vector3(*ray.direction)).ok()?,
     );
 
-    let triangle_count = match indices {
-        Some(indices) => indices.len() / 3,
-        None => positions.len() / 3,
-    };
+    let triangle_count = triangle_count(positions.len(), indices.map(<[I]>::len));
     let closest_hit = if let Some(bvh) = bvh.filter(|bvh| bvh.triangle_count() == triangle_count) {
         if indices.is_some_and(|indices| indices.len() % 3 != 0) {
             return None;

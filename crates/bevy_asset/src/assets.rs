@@ -521,11 +521,17 @@ impl<A: Asset> Assets<A> {
         self.dense_storage.len() + self.hash_map.len()
     }
 
-    /// Returns `true` if this collection was changed in a way that queued [`AssetEvent`]s which
-    /// haven't been written yet.
+    /// Returns the [`AssetEvent`]s for the changes made to this collection that haven't been
+    /// written yet.
     ///
     /// Queued events are written by the [`AssetEventSystems`](crate::AssetEventSystems) system set,
     /// in `PostUpdate`.
+    pub fn pending_events(&self) -> &[AssetEvent<A>] {
+        &self.queued_events
+    }
+
+    /// Returns `true` if this collection was changed in a way that queued [`AssetEvent`]s which
+    /// haven't been written yet, see [`Assets::pending_events`].
     pub fn has_pending_events(&self) -> bool {
         !self.queued_events.is_empty()
     }

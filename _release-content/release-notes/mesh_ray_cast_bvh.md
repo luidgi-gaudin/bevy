@@ -20,12 +20,13 @@ triangles close to the ray need to be tested, nearest first:
 This is completely automatic when using the `MeshPickingPlugin`, and gives exactly the same results
 as before:
 
-- The BVH of a mesh is built the second time it is hit by a ray, and cached in the new
-  `MeshRayCastCache` resource. Meshes that are modified every frame are never slowed down by
-  rebuilding their BVH. The BVHs of very large meshes are built in a background task, so that
-  building them doesn't cause long frame hitches.
+- The BVH of a mesh is built once rays have hit it over a few frames without it being modified,
+  and cached in the new `MeshRayCastCache` resource. Meshes that are modified often are never
+  slowed down by rebuilding their BVH. The BVHs of very large meshes are built in a background
+  task, so that building them doesn't cause long frame hitches.
 - The BVH is dropped when the mesh is modified or removed. Ray casts made after modifying a mesh in
-  the same frame don't use cached BVHs, so they never see stale data.
+  the same frame don't use its cached BVH, so they never see stale data, while the BVHs of the other
+  meshes keep being used.
 
 If you use `MeshRayCast` without the `MeshPickingPlugin`, add the `MeshRayCastPlugin` to enable the
 cache. To ray cast against your own mesh data, you can build a `TriangleBvh` yourself and pass it to
