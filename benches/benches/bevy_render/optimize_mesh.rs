@@ -6,7 +6,8 @@ use criterion::{criterion_group, BatchSize, Criterion};
 use rand::{prelude::SliceRandom, SeedableRng};
 
 use bevy_asset::RenderAssetUsages;
-use bevy_mesh::{Indices, Mesh, PrimitiveTopology};
+use bevy_mesh::{Indices, Mesh, MeshSimplificationSettings, Meshable, PrimitiveTopology};
+use bevy_shape::Sphere;
 
 const GRID_SIZE: u32 = 256;
 
@@ -68,6 +69,24 @@ fn optimize_mesh(c: &mut Criterion) {
         b.iter(|| black_box(mesh.analyze_vertex_cache(black_box(16)).unwrap()));
     });
 
+    group.finish();
+
+    let mut group = c.benchmark_group(bench!("simplify"));
+    let sphere = Sphere::new(1.0).mesh().uv(256, 128);
+    for target_ratio in [0.5, 0.1] {
+        group.bench_function(format!("uv_sphere_{target_ratio}"), |b| {
+            let settings = MeshSimplificationSettings {
+                target_ratio,
+                max_error: f32::INFINITY,
+                lock_border: false,
+            };
+            b.iter_batched_ref(
+                || sphere.clone(),
+                |mesh| mesh.simplify(&settings).unwrap(),
+                BatchSize::LargeInput,
+            );
+        });
+    }
     group.finish();
 }
 

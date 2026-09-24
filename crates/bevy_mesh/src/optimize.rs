@@ -81,6 +81,12 @@ pub enum MeshOptimizationError {
         /// The number of vertices of the mesh.
         vertex_count: usize,
     },
+    /// The mesh doesn't have [`Mesh::ATTRIBUTE_POSITION`] in the [`VertexFormat::Float32x3`](crate::VertexFormat::Float32x3)
+    /// format, for example because its positions have been compressed.
+    #[error(
+        "The mesh must have `Mesh::ATTRIBUTE_POSITION` with the `VertexFormat::Float32x3` format"
+    )]
+    UnsupportedPositions,
     /// The mesh data has been extracted to the `RenderWorld`.
     #[error("Mesh access error: {0}")]
     MeshAccessError(#[from] MeshAccessError),
@@ -290,7 +296,7 @@ impl Mesh {
 
     /// Like [`Mesh::count_vertices`], but returns an error instead of panicking if the mesh data
     /// has been extracted to the `RenderWorld`.
-    fn try_count_vertices(&self) -> Result<usize, MeshAccessError> {
+    pub(crate) fn try_count_vertices(&self) -> Result<usize, MeshAccessError> {
         Ok(self
             .try_attributes()?
             .map(|(_, values)| values.len())
@@ -312,7 +318,7 @@ fn restart_index(indices: &Indices, topology: PrimitiveTopology) -> Option<u32> 
 
 /// Checks that the indices are valid for a mesh with `vertex_count` vertices and the given
 /// `topology`.
-fn validate_indices(
+pub(crate) fn validate_indices(
     indices: &Indices,
     vertex_count: usize,
     topology: PrimitiveTopology,
@@ -336,7 +342,7 @@ fn validate_indices(
 /// Runs `f` on the indices as `u32`, converting them back and forth if they are stored as `u16`.
 ///
 /// `f` must not produce values that don't fit in the original index format.
-fn with_u32_indices<R>(indices: &mut Indices, f: impl FnOnce(&mut [u32]) -> R) -> R {
+pub(crate) fn with_u32_indices<R>(indices: &mut Indices, f: impl FnOnce(&mut [u32]) -> R) -> R {
     match indices {
         Indices::U32(indices) => f(indices),
         Indices::U16(narrow_indices) => {
