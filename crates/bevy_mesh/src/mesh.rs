@@ -1377,23 +1377,49 @@ impl Mesh {
 
         let vertex_size = self.get_vertex_size() as usize;
         let vertex_count = self.count_vertices();
-        // bundle into interleaved buffers
-        let mut attribute_offset = 0;
-        for attribute_data in mesh_attributes.values() {
-            let attribute_size = attribute_data.attribute.format.size() as usize;
-            let attributes_bytes = attribute_data.values.get_bytes();
-            for (vertex_index, attribute_bytes) in attributes_bytes
-                .chunks_exact(attribute_size)
-                .take(vertex_count)
-                .enumerate()
-            {
-                let offset = vertex_index * vertex_size + attribute_offset;
-                slice
-                    .slice(offset..offset + attribute_size)
-                    .copy_from_slice(attribute_bytes);
-            }
+        if vertex_size == 0 || vertex_count == 0 {
+            return;
+        }
+        let attributes: Vec<(&[u8], usize)> = mesh_attributes
+            .values()
+            .map(|data| {
+                (
+                    data.values.get_bytes(),
+                    data.attribute.format.size() as usize,
+                )
+            })
+            .collect();
 
-            attribute_offset += attribute_size;
+        // A single attribute is already packed.
+        if let [(bytes, _)] = attributes[..] {
+            let size = vertex_count * vertex_size;
+            slice.slice(..size).copy_from_slice(&bytes[..size]);
+            return;
+        }
+
+        // Interleave the attributes of a few vertices at a time in a small buffer that stays in the
+        // CPU cache, and copy it to `slice` in one go. `slice` usually is memory mapped from the
+        // GPU, which is often write-combined: writing it sequentially is much faster than writing
+        // each attribute of each vertex separately.
+        const CHUNK_SIZE: usize = 16 * 1024;
+        let chunk_vertex_count = (CHUNK_SIZE / vertex_size).clamp(1, vertex_count);
+        let mut chunk = vec![0; chunk_vertex_count * vertex_size];
+        for first_vertex in (0..vertex_count).step_by(chunk_vertex_count) {
+            let vertices = first_vertex..vertex_count.min(first_vertex + chunk_vertex_count);
+            let chunk = &mut chunk[..vertices.len() * vertex_size];
+            let mut attribute_offset = 0;
+            for &(bytes, attribute_size) in &attributes {
+                interleave_attribute(
+                    &mut chunk[attribute_offset..],
+                    vertex_size,
+                    &bytes[vertices.start * attribute_size..vertices.end * attribute_size],
+                    attribute_size,
+                );
+                attribute_offset += attribute_size;
+            }
+            slice
+                .slice(vertices.start * vertex_size..vertices.end * vertex_size)
+                .copy_from_slice(chunk);
         }
     }
 
@@ -3151,6 +3177,40 @@ impl MeshDeserializer {
     }
 }
 
+/// Copies each `attribute_size`-byte value of `source` to the start of each `stride`-byte chunk
+/// of `destination`.
+fn interleave_attribute(
+    destination: &mut [u8],
+    stride: usize,
+    source: &[u8],
+    attribute_size: usize,
+) {
+    // Copying values of a known size compiles to a few moves instead of a call to `memcpy`.
+    fn interleave<const SIZE: usize>(destination: &mut [u8], stride: usize, source: &[u8]) {
+        for (destination, source) in destination
+            .chunks_mut(stride)
+            .zip(source.as_chunks::<SIZE>().0)
+        {
+            destination[..SIZE].copy_from_slice(source);
+        }
+    }
+
+    match attribute_size {
+        4 => interleave::<4>(destination, stride, source),
+        8 => interleave::<8>(destination, stride, source),
+        12 => interleave::<12>(destination, stride, source),
+        16 => interleave::<16>(destination, stride, source),
+        _ => {
+            for (destination, source) in destination
+                .chunks_mut(stride)
+                .zip(source.chunks_exact(attribute_size))
+            {
+                destination[..attribute_size].copy_from_slice(source);
+            }
+        }
+    }
+}
+
 /// Error that can occur when compressing/quantizing mesh vertex attributes.
 #[derive(Error, Debug, Clone)]
 pub enum MeshAttributeCompressionError {
@@ -3213,6 +3273,84 @@ mod tests {
     use bevy_math::{Vec2, Vec3, Vec3A, Vec4};
     use bevy_shape::{Aabb2d, Aabb3d, Triangle3d};
     use bevy_transform::components::Transform;
+
+    #[test]
+    fn packed_vertex_buffer_data() {
+        // Attributes of many different sizes, and enough vertices to fill several chunks.
+        let vertex_count = 3000;
+        let attribute = |id: u64, format: wgpu_types::VertexFormat| {
+            MeshVertexAttribute::new("Test_Attribute", id, format)
+        };
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            (0..vertex_count)
+                .map(|i| [i as f32, 1.0, 2.0])
+                .collect::<Vec<_>>(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            (0..vertex_count)
+                .map(|i| [i as f32, -1.0])
+                .collect::<Vec<_>>(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            (0..vertex_count)
+                .map(|i| [i as f32, 0.5, 0.25, 1.0])
+                .collect::<Vec<_>>(),
+        );
+        mesh.insert_attribute(
+            attribute(100, wgpu_types::VertexFormat::Uint8),
+            VertexAttributeValues::Uint8((0..vertex_count).map(|i| i as u8).collect()),
+        );
+        mesh.insert_attribute(
+            attribute(101, wgpu_types::VertexFormat::Unorm8x2),
+            VertexAttributeValues::Unorm8x2((0..vertex_count).map(|i| [i as u8, 7]).collect()),
+        );
+        mesh.insert_attribute(
+            attribute(102, wgpu_types::VertexFormat::Uint32),
+            VertexAttributeValues::Uint32((0..vertex_count).map(|i| i as u32 * 3).collect()),
+        );
+        mesh.insert_attribute(
+            attribute(103, wgpu_types::VertexFormat::Float64x3),
+            VertexAttributeValues::Float64x3(
+                (0..vertex_count).map(|i| [i as f64, 0.0, -2.0]).collect(),
+            ),
+        );
+
+        // Interleave the attributes one vertex at a time.
+        let vertex_size = mesh.get_vertex_size() as usize;
+        let mut expected = Vec::with_capacity(vertex_count * vertex_size);
+        for vertex in 0..vertex_count {
+            for (attribute, values) in mesh.attributes() {
+                let size = attribute.format.size() as usize;
+                expected.extend_from_slice(&values.get_bytes()[vertex * size..][..size]);
+            }
+        }
+        assert_eq!(mesh.create_packed_vertex_buffer_data(), expected);
+
+        // A single attribute.
+        let mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[1.0, 2.0, 3.0]; 5]);
+        assert_eq!(
+            mesh.create_packed_vertex_buffer_data(),
+            bytemuck::cast_slice::<_, u8>(&[[1.0f32, 2.0, 3.0]; 5])
+        );
+
+        // No vertices.
+        let mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        assert!(mesh.create_packed_vertex_buffer_data().is_empty());
+    }
 
     #[test]
     #[should_panic]

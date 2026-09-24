@@ -50,6 +50,7 @@ bytemuck = { version = "1", default-features = false, features = [
   "derive",
   "must_cast",
 ] }
+wgpu-types = { version = "30", default-features = false }
 
 [lints.clippy]
 doc_markdown = "warn"
