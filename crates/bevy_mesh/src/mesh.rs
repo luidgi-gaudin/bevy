@@ -1472,14 +1472,18 @@ impl Mesh {
                 .map(|data| data.values.len())
                 .min()
                 .unwrap_or(0);
-            if let Some(morph_targets) = self.morph_targets.as_mut_option()?
-                && vertex_count > 0
-                && morph_targets.len().is_multiple_of(vertex_count)
-            {
-                *morph_targets = morph_targets
-                    .chunks_exact(vertex_count)
-                    .flat_map(|target| source_vertices().map(|i| target[i]))
-                    .collect();
+            if let Some(morph_targets) = self.morph_targets.as_mut_option()? {
+                if vertex_count > 0 && morph_targets.len().is_multiple_of(vertex_count) {
+                    *morph_targets = morph_targets
+                        .chunks_exact(vertex_count)
+                        .flat_map(|target| source_vertices().map(|i| target[i]))
+                        .collect();
+                } else {
+                    warn!(
+                        "The morph targets of the mesh don't match its {vertex_count} vertices, \
+                        they will not follow the changes to the vertices"
+                    );
+                }
             }
         }
 

@@ -101,7 +101,14 @@ impl Mesh {
                 self.primitive_topology(),
             ));
         }
+        if settings.target_ratio.is_nan() || settings.max_error.is_nan() || settings.max_error < 0.0
+        {
+            return Err(MeshOptimizationError::InvalidSimplificationSettings(
+                settings.clone(),
+            ));
+        }
         let vertex_count = self.try_count_vertices()?;
+        self.validate_morph_targets(vertex_count)?;
         let Some(VertexAttributeValues::Float32x3(positions)) =
             self.try_attribute_option(Mesh::ATTRIBUTE_POSITION)?
         else {
@@ -480,6 +487,8 @@ fn simplify(
         let mut collapsed = false;
         let mut wedge_mapping: Vec<(u32, u32)> = Vec::new();
         let mut from_vertices: Vec<u32> = Vec::new();
+        let mut from_neighbors: Vec<u32> = Vec::new();
+        let mut opposite_positions: Vec<u32> = Vec::new();
         for &(collapse_error, from, to) in &collapses {
             if remaining_triangles <= target_triangle_count
                 || collapse_error > max_error_squared
@@ -519,6 +528,58 @@ fn simplify(
                 }
             }
             if flips {
+                continue;
+            }
+
+            // Keep the surface manifold: `from` and `to` can only share the neighbors on the other
+            // side of their common triangles, and no triangle can end up duplicated, as when
+            // collapsing a closed tetrahedron into two triangles facing opposite directions.
+            from_neighbors.clear();
+            opposite_positions.clear();
+            for &triangle in triangles_around(from) {
+                let corners = triangle_positions[triangle as usize];
+                for position in corners {
+                    if position != from && !from_neighbors.contains(&position) {
+                        from_neighbors.push(position);
+                    }
+                    if corners.contains(&to) && position != from && position != to {
+                        opposite_positions.push(position);
+                    }
+                }
+            }
+            let mut manifold = true;
+            'triangles: for &triangle in triangles_around(to) {
+                let corners = triangle_positions[triangle as usize];
+                if corners.contains(&from) {
+                    continue;
+                }
+                for position in corners {
+                    if position != to
+                        && from_neighbors.contains(&position)
+                        && !opposite_positions.contains(&position)
+                    {
+                        manifold = false;
+                        break 'triangles;
+                    }
+                }
+            }
+            let sorted = |mut corners: [u32; 3]| {
+                corners.sort_unstable();
+                corners
+            };
+            let creates_duplicate = || {
+                triangles_around(from).iter().any(|&triangle| {
+                    let corners = triangle_positions[triangle as usize];
+                    if corners.contains(&to) {
+                        return false;
+                    }
+                    let collapsed = sorted(corners.map(|p| if p == from { to } else { p }));
+                    triangles_around(to)
+                        .iter()
+                        .any(|&other| sorted(triangle_positions[other as usize]) == collapsed)
+                })
+            };
+            if !manifold || creates_duplicate() {
                 continue;
             }
 
@@ -811,6 +872,56 @@ mod tests {
     }
 
     #[test]
+    fn closed_meshes_do_not_vanish() {
+        // A closed tetrahedron, and a closed cube with shared vertices.
+        let tetrahedron = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        )
+        .with_inserted_indices(Indices::U32(vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]));
+        let cube_positions: Vec<[f32; 3]> = (0..8)
+            .map(|i| [(i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32])
+            .collect();
+        let cube = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, cube_positions)
+        .with_inserted_indices(Indices::U32(vec![
+            0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4,
+            6, 1, 3, 5, 3, 7, 5,
+        ]));
+
+        for mesh in [tetrahedron, cube] {
+            let mut mesh = mesh;
+            mesh.simplify(&settings(0.0, f32::INFINITY)).unwrap();
+            let triangles = triangles(&mesh);
+            // At least a tetrahedron remains, without duplicated triangles.
+            assert!(triangles.len() >= 4, "{triangles:?}");
+            let mut sorted: Vec<[[u32; 3]; 3]> = triangles
+                .iter()
+                .map(|triangle| {
+                    let mut corners = triangle.map(|p| p.to_array().map(f32::to_bits));
+                    corners.sort_unstable();
+                    corners
+                })
+                .collect();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), triangles.len());
+        }
+    }
+
+    #[test]
     fn simplify_errors() {
         let mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -839,5 +950,16 @@ mod tests {
                 PrimitiveTopology::LineList
             ))
         ));
+        let triangle = mesh.with_inserted_indices(Indices::U32(vec![0, 1, 2]));
+        for invalid_settings in [
+            settings(f32::NAN, 0.01),
+            settings(0.5, f32::NAN),
+            settings(0.5, -0.01),
+        ] {
+            assert!(matches!(
+                triangle.clone().simplified(&invalid_settings),
+                Err(MeshOptimizationError::InvalidSimplificationSettings(_))
+            ));
+        }
     }
 }

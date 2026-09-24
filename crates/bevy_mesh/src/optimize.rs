@@ -87,6 +87,18 @@ pub enum MeshOptimizationError {
         "The mesh must have `Mesh::ATTRIBUTE_POSITION` with the `VertexFormat::Float32x3` format"
     )]
     UnsupportedPositions,
+    /// The number of morph target displacements isn't a multiple of the number of vertices.
+    #[error("The mesh has {morph_target_count} morph target displacements, which is not a multiple of its {vertex_count} vertices")]
+    MorphTargetMismatch {
+        /// The number of morph target displacements, for all targets.
+        morph_target_count: usize,
+        /// The number of vertices of the mesh.
+        vertex_count: usize,
+    },
+    /// The [`MeshSimplificationSettings`](crate::MeshSimplificationSettings) are invalid: the
+    /// target ratio is NaN, or the maximum error is NaN or negative.
+    #[error("Invalid mesh simplification settings: {0:?}")]
+    InvalidSimplificationSettings(crate::MeshSimplificationSettings),
     /// The mesh data has been extracted to the `RenderWorld`.
     #[error("Mesh access error: {0}")]
     MeshAccessError(#[from] MeshAccessError),
@@ -172,6 +184,7 @@ impl Mesh {
     /// or if the mesh data has been extracted to the `RenderWorld`.
     pub fn optimize_vertex_fetch(&mut self) -> Result<(), MeshOptimizationError> {
         let vertex_count = self.try_count_vertices()?;
+        self.validate_morph_targets(vertex_count)?;
         let topology = self.primitive_topology();
         let indices = self
             .try_indices_mut_option()?
@@ -296,6 +309,27 @@ impl Mesh {
 
     /// Like [`Mesh::count_vertices`], but returns an error instead of panicking if the mesh data
     /// has been extracted to the `RenderWorld`.
+    /// Checks that the morph targets of the mesh, if any, can be reordered along with its
+    /// `vertex_count` vertices.
+    pub(crate) fn validate_morph_targets(
+        &self,
+        vertex_count: usize,
+    ) -> Result<(), MeshOptimizationError> {
+        #[cfg(feature = "morph")]
+        if self.try_has_morph_targets()? {
+            let morph_target_count = self.try_morph_targets()?.len();
+            if vertex_count == 0 || !morph_target_count.is_multiple_of(vertex_count) {
+                return Err(MeshOptimizationError::MorphTargetMismatch {
+                    morph_target_count,
+                    vertex_count,
+                });
+            }
+        }
+        #[cfg(not(feature = "morph"))]
+        let _ = vertex_count;
+        Ok(())
+    }
+
     pub(crate) fn try_count_vertices(&self) -> Result<usize, MeshAccessError> {
         Ok(self
             .try_attributes()?
@@ -1079,6 +1113,39 @@ mod tests {
                 morph(1.0, 1.0),
             ]
         );
+    }
+
+    #[cfg(feature = "morph")]
+    #[test]
+    fn mismatched_morph_targets_are_rejected() {
+        use crate::morph::MorphAttributes;
+
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+        )
+        .with_inserted_indices(Indices::U32(vec![3, 0, 1]));
+        mesh.set_morph_targets(vec![MorphAttributes::default(); 5]);
+        let before = mesh.clone();
+
+        assert!(matches!(
+            mesh.optimize_for_gpu(),
+            Err(MeshOptimizationError::MorphTargetMismatch {
+                morph_target_count: 5,
+                vertex_count: 4
+            })
+        ));
+        // The mesh is left untouched.
+        assert_eq!(mesh, before);
     }
 
     #[cfg(feature = "morph")]
