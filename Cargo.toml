@@ -4957,6 +4957,17 @@ category = "3D Rendering"
 wasm = true
 
 [[example]]
+name = "mesh_lod"
+path = "examples/3d/mesh_lod.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.mesh_lod]
+name = "Mesh LOD"
+description = "Generates levels of detail with mesh simplification, and switches between them with visibility ranges"
+category = "3D Rendering"
+wasm = true
+
+[[example]]
 name = "ssr"
 path = "examples/3d/ssr.rs"
 doc-scrape-examples = true
