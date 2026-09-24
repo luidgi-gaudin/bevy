@@ -307,8 +307,6 @@ impl Mesh {
         ))
     }
 
-    /// Like [`Mesh::count_vertices`], but returns an error instead of panicking if the mesh data
-    /// has been extracted to the `RenderWorld`.
     /// Checks that the morph targets of the mesh, if any, can be reordered along with its
     /// `vertex_count` vertices.
     pub(crate) fn validate_morph_targets(
@@ -330,6 +328,8 @@ impl Mesh {
         Ok(())
     }
 
+    /// Like [`Mesh::count_vertices`], but returns an error instead of panicking if the mesh data
+    /// has been extracted to the `RenderWorld`.
     pub(crate) fn try_count_vertices(&self) -> Result<usize, MeshAccessError> {
         Ok(self
             .try_attributes()?
