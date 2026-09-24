@@ -11,6 +11,7 @@ mod mesh;
 mod mikktspace;
 #[cfg(feature = "morph")]
 pub mod morph;
+mod optimize;
 pub mod primitives;
 pub mod skinning;
 mod vertex;
@@ -23,6 +24,7 @@ pub use index::*;
 pub use mesh::*;
 #[cfg(feature = "bevy_mikktspace")]
 pub use mikktspace::*;
+pub use optimize::*;
 pub use primitives::*;
 pub use vertex::*;
 use wgpu_types::IndexFormat;

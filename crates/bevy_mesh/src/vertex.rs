@@ -1010,6 +1010,70 @@ impl VertexAttributeValues {
             VertexAttributeValues::Unorm8x4Bgra(v) => v.shrink_to_fit(),
         }
     }
+
+    /// Replaces the values with `values[i]` for each `i` yielded by `indices`, in order.
+    ///
+    /// This can be used to duplicate, reorder or drop vertices.
+    ///
+    /// # Panics
+    /// Panics if any of the `indices` is out of bounds.
+    #[expect(
+        clippy::match_same_arms,
+        reason = "Although the `values` binding on some match arms may have matching types, each variant has different semantics; thus it's not guaranteed that they will use the same type forever."
+    )]
+    pub(crate) fn gather(&mut self, indices: impl Iterator<Item = usize>) {
+        fn gather<T: Copy>(values: &mut Vec<T>, indices: impl Iterator<Item = usize>) {
+            *values = indices.map(|i| values[i]).collect();
+        }
+
+        match self {
+            VertexAttributeValues::Float32(values) => gather(values, indices),
+            VertexAttributeValues::Sint32(values) => gather(values, indices),
+            VertexAttributeValues::Uint32(values) => gather(values, indices),
+            VertexAttributeValues::Float32x2(values) => gather(values, indices),
+            VertexAttributeValues::Sint32x2(values) => gather(values, indices),
+            VertexAttributeValues::Uint32x2(values) => gather(values, indices),
+            VertexAttributeValues::Float32x3(values) => gather(values, indices),
+            VertexAttributeValues::Sint32x3(values) => gather(values, indices),
+            VertexAttributeValues::Uint32x3(values) => gather(values, indices),
+            VertexAttributeValues::Float32x4(values) => gather(values, indices),
+            VertexAttributeValues::Sint32x4(values) => gather(values, indices),
+            VertexAttributeValues::Uint32x4(values) => gather(values, indices),
+            VertexAttributeValues::Sint16x2(values) => gather(values, indices),
+            VertexAttributeValues::Snorm16x2(values) => gather(values, indices),
+            VertexAttributeValues::Uint16x2(values) => gather(values, indices),
+            VertexAttributeValues::Unorm16x2(values) => gather(values, indices),
+            VertexAttributeValues::Sint16x4(values) => gather(values, indices),
+            VertexAttributeValues::Snorm16x4(values) => gather(values, indices),
+            VertexAttributeValues::Uint16x4(values) => gather(values, indices),
+            VertexAttributeValues::Unorm16x4(values) => gather(values, indices),
+            VertexAttributeValues::Sint8x2(values) => gather(values, indices),
+            VertexAttributeValues::Snorm8x2(values) => gather(values, indices),
+            VertexAttributeValues::Uint8x2(values) => gather(values, indices),
+            VertexAttributeValues::Unorm8x2(values) => gather(values, indices),
+            VertexAttributeValues::Sint8x4(values) => gather(values, indices),
+            VertexAttributeValues::Snorm8x4(values) => gather(values, indices),
+            VertexAttributeValues::Uint8x4(values) => gather(values, indices),
+            VertexAttributeValues::Unorm8x4(values) => gather(values, indices),
+            VertexAttributeValues::Uint8(values) => gather(values, indices),
+            VertexAttributeValues::Sint8(values) => gather(values, indices),
+            VertexAttributeValues::Unorm8(values) => gather(values, indices),
+            VertexAttributeValues::Snorm8(values) => gather(values, indices),
+            VertexAttributeValues::Uint16(values) => gather(values, indices),
+            VertexAttributeValues::Sint16(values) => gather(values, indices),
+            VertexAttributeValues::Unorm16(values) => gather(values, indices),
+            VertexAttributeValues::Snorm16(values) => gather(values, indices),
+            VertexAttributeValues::Float16(values) => gather(values, indices),
+            VertexAttributeValues::Float16x2(values) => gather(values, indices),
+            VertexAttributeValues::Float16x4(values) => gather(values, indices),
+            VertexAttributeValues::Float64(values) => gather(values, indices),
+            VertexAttributeValues::Float64x2(values) => gather(values, indices),
+            VertexAttributeValues::Float64x3(values) => gather(values, indices),
+            VertexAttributeValues::Float64x4(values) => gather(values, indices),
+            VertexAttributeValues::Unorm10_10_10_2(values) => gather(values, indices),
+            VertexAttributeValues::Unorm8x4Bgra(values) => gather(values, indices),
+        }
+    }
 }
 
 impl From<&VertexAttributeValues> for VertexFormat {

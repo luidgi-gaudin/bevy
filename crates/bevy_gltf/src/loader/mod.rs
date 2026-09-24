@@ -164,6 +164,9 @@ pub struct GltfLoader {
     pub default_skinned_mesh_bounds_policy: GltfSkinnedMeshBoundsPolicy,
     /// Default mesh compression arguments for the loaded meshes.
     pub default_mesh_compression: MeshCompressionArgs,
+    /// Whether to optimize the loaded meshes for the GPU by default. Can be overridden by
+    /// [`GltfLoaderSettings::optimize_meshes`].
+    pub default_optimize_meshes: bool,
 }
 
 /// Specifies optional settings for processing gltfs at load time. By default, all recognized contents of
@@ -221,6 +224,10 @@ pub struct GltfLoaderSettings {
     /// Mesh attribute compression arguments for the loaded meshes.
     /// If `None`, uses the global default set by [`GltfPlugin::mesh_compression`](crate::GltfPlugin::mesh_compression).
     pub mesh_compression: Option<MeshCompressionArgs>,
+    /// Whether to reorder the triangles and vertices of the loaded meshes to make them faster
+    /// to render, see [`Mesh::optimize_for_gpu`].
+    /// If `None`, uses the global default set by [`GltfPlugin::optimize_meshes`](crate::GltfPlugin::optimize_meshes).
+    pub optimize_meshes: Option<bool>,
 }
 
 impl Default for GltfLoaderSettings {
@@ -238,6 +245,7 @@ impl Default for GltfLoaderSettings {
             convert_coordinates: None,
             skinned_mesh_bounds_policy: None,
             mesh_compression: None,
+            optimize_meshes: None,
         }
     }
 }
@@ -856,6 +864,18 @@ impl GltfLoader {
                                 "Failed to generate vertex tangents using the mikktspace algorithm: {}",
                                 err
                             );
+                        }
+                    });
+                }
+
+                if settings
+                    .optimize_meshes
+                    .unwrap_or(loader.default_optimize_meshes)
+                    && mesh.indices().is_some()
+                {
+                    info_span!("optimize_mesh", name = file_name).in_scope(|| {
+                        if let Err(err) = mesh.optimize_for_gpu() {
+                            warn!("Failed to optimize mesh {}: {}", primitive_label, err);
                         }
                     });
                 }
@@ -2115,7 +2135,9 @@ pub struct MorphTargetNames {
 mod test {
     use std::path::Path;
 
-    use crate::{Gltf, GltfAssetLabel, GltfLoaderSettings, GltfMaterial, GltfNode, GltfSkin};
+    use crate::{
+        Gltf, GltfAssetLabel, GltfLoaderSettings, GltfMaterial, GltfMesh, GltfNode, GltfSkin,
+    };
     use bevy_app::{App, TaskPoolPlugin};
     use bevy_asset::{
         io::{
@@ -2128,7 +2150,7 @@ mod test {
     use bevy_image::{Image, ImageLoaderSettings};
     use bevy_log::LogPlugin;
     use bevy_mesh::skinning::SkinnedMeshInverseBindposes;
-    use bevy_mesh::MeshPlugin;
+    use bevy_mesh::{Indices, Mesh, MeshPlugin, VertexAttributeValues};
     use bevy_reflect::TypePath;
     use bevy_world_serialization::WorldSerializationPlugin;
 
@@ -2467,6 +2489,104 @@ mod test {
         });
         let load_state = asset_server.get_load_state(handle_id).unwrap();
         assert!(load_state.is_failed());
+    }
+
+    /// Loads a glTF file with a single triangle that uses the vertices 3, 1 and 2 (vertex 0 is
+    /// unused), and returns its mesh.
+    fn load_triangle_mesh(optimize_meshes: Option<bool>) -> Mesh {
+        let gltf_path = "triangle.gltf";
+        let gltf = r#"
+{
+    "asset": { "version": "2.0" },
+    "meshes": [
+        {
+            "primitives": [
+                {
+                    "attributes": { "POSITION": 0, "NORMAL": 1 },
+                    "indices": 2
+                }
+            ]
+        }
+    ],
+    "buffers": [
+        {
+            "uri": "data:application/gltf-buffer;base64,AAAQQQAAEEEAABBBAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AwABAAIAAAA=",
+            "byteLength": 104
+        }
+    ],
+    "bufferViews": [
+        { "buffer": 0, "byteOffset": 0, "byteLength": 48 },
+        { "buffer": 0, "byteOffset": 48, "byteLength": 48 },
+        { "buffer": 0, "byteOffset": 96, "byteLength": 6 }
+    ],
+    "accessors": [
+        {
+            "bufferView": 0,
+            "componentType": 5126,
+            "count": 4,
+            "type": "VEC3",
+            "min": [0.0, 0.0, 0.0],
+            "max": [9.0, 9.0, 9.0]
+        },
+        { "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3" },
+        { "bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR" }
+    ]
+}
+"#;
+        let dir = Dir::default();
+        dir.insert_asset_text(Path::new(gltf_path), gltf);
+        let mut app = test_app(dir);
+        app.update();
+        let asset_server = app.world().resource::<AssetServer>().clone();
+        let handle: Handle<Gltf> = asset_server
+            .load_builder()
+            .with_settings(move |settings: &mut GltfLoaderSettings| {
+                settings.optimize_meshes = optimize_meshes;
+            })
+            .load(gltf_path);
+        run_app_until(&mut app, |_world| {
+            match asset_server.get_load_state(handle.id()).unwrap() {
+                LoadState::Loaded => Some(()),
+                LoadState::Failed(err) => panic!("{err}"),
+                _ => None,
+            }
+        });
+
+        let gltf = app.world().resource::<Assets<Gltf>>().get(&handle).unwrap();
+        let gltf_mesh = app
+            .world()
+            .resource::<Assets<GltfMesh>>()
+            .get(&gltf.meshes[0])
+            .unwrap();
+        app.world()
+            .resource::<Assets<Mesh>>()
+            .get(&gltf_mesh.primitives[0].mesh)
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn mesh_optimization_is_disabled_by_default() {
+        let mesh = load_triangle_mesh(None);
+        assert_eq!(mesh.count_vertices(), 4);
+        assert_eq!(mesh.indices(), Some(&Indices::U16(vec![3, 1, 2])));
+    }
+
+    #[test]
+    fn optimize_meshes_setting() {
+        let mesh = load_triangle_mesh(Some(true));
+        // The unused vertex is removed, and the other ones are sorted by first use.
+        assert_eq!(mesh.count_vertices(), 3);
+        assert_eq!(mesh.indices(), Some(&Indices::U16(vec![0, 1, 2])));
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("missing positions");
+        };
+        assert_eq!(
+            positions,
+            &[[0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+        );
     }
 
     #[test]

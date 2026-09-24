@@ -1416,69 +1416,49 @@ impl Mesh {
     ///
     /// Returns an error if the mesh data has been extracted to `RenderWorld`.
     pub fn try_duplicate_vertices(&mut self) -> Result<(), MeshAccessError> {
-        fn duplicate<T: Copy>(values: &[T], indices: impl Iterator<Item = usize>) -> Vec<T> {
-            indices.map(|i| values[i]).collect()
-        }
-
         let Some(indices) = self.indices.replace(None)? else {
             return Ok(());
         };
 
+        self.try_gather_vertices(|| indices.iter())
+    }
+
+    /// Rebuilds all per-vertex data (vertex attributes and morph targets), so that the new
+    /// vertex at position `n` is a copy of the old vertex at position `source_vertices().nth(n)`.
+    ///
+    /// This can be used to duplicate, reorder or drop vertices. Indices are left untouched.
+    ///
+    /// Returns an error if the mesh data has been extracted to `RenderWorld`.
+    ///
+    /// # Panics
+    /// Panics if any of the source vertices is out of bounds.
+    pub(crate) fn try_gather_vertices<I: Iterator<Item = usize>>(
+        &mut self,
+        source_vertices: impl Fn() -> I,
+    ) -> Result<(), MeshAccessError> {
         let mesh_attributes = self.attributes.as_mut()?;
 
-        for attributes in mesh_attributes.values_mut() {
-            let indices = indices.iter();
-            #[expect(
-                clippy::match_same_arms,
-                reason = "Although the `vec` binding on some match arms may have different types, each variant has different semantics; thus it's not guaranteed that they will use the same type forever."
-            )]
-            match &mut attributes.values {
-                VertexAttributeValues::Float32(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint32(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint32(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float32x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint32x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint32x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float32x3(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint32x3(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint32x3(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint32x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint32x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float32x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint16x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Snorm16x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint16x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm16x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint16x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Snorm16x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint16x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm16x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint8x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Snorm8x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint8x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm8x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint8x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Snorm8x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint8x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm8x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint8(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint8(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm8(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Snorm8(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Uint16(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Sint16(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm16(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Snorm16(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float16(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float16x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float16x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float64(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float64x2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float64x3(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Float64x4(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm10_10_10_2(vec) => *vec = duplicate(vec, indices),
-                VertexAttributeValues::Unorm8x4Bgra(vec) => *vec = duplicate(vec, indices),
+        #[cfg(feature = "morph")]
+        {
+            // Morph targets are stored target after target, each with one entry per vertex.
+            let vertex_count = mesh_attributes
+                .values()
+                .map(|data| data.values.len())
+                .min()
+                .unwrap_or(0);
+            if let Some(morph_targets) = self.morph_targets.as_mut_option()?
+                && vertex_count > 0
+                && morph_targets.len().is_multiple_of(vertex_count)
+            {
+                *morph_targets = morph_targets
+                    .chunks_exact(vertex_count)
+                    .flat_map(|target| source_vertices().map(|i| target[i]))
+                    .collect();
             }
+        }
+
+        for attributes in mesh_attributes.values_mut() {
+            attributes.values.gather(source_vertices());
         }
 
         Ok(())

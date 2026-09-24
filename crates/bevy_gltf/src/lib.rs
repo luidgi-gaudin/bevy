@@ -242,6 +242,15 @@ pub struct GltfPlugin {
 
     /// Mesh attribute compression arguments applied when loading meshes.
     pub mesh_compression: MeshCompressionArgs,
+
+    /// Whether to reorder the triangles and vertices of the loaded meshes to make them faster
+    /// to render, with [`Mesh::optimize_for_gpu`](bevy_mesh::Mesh::optimize_for_gpu).
+    /// Can be overridden by [`GltfLoaderSettings::optimize_meshes`].
+    ///
+    /// This is disabled by default, as it makes loading a bit slower and changes the order of
+    /// the vertices of the loaded meshes. Enable it if your glTF files haven't been optimized
+    /// by a tool like `gltfpack` beforehand.
+    pub optimize_meshes: bool,
 }
 
 impl Default for GltfPlugin {
@@ -252,6 +261,7 @@ impl Default for GltfPlugin {
             convert_coordinates: GltfConvertCoordinates::default(),
             skinned_mesh_bounds_policy: Default::default(),
             mesh_compression: MeshCompressionArgs::none(),
+            optimize_meshes: false,
         }
     }
 }
@@ -309,6 +319,7 @@ impl Plugin for GltfPlugin {
             extensions: extensions.0.clone(),
             default_skinned_mesh_bounds_policy: self.skinned_mesh_bounds_policy,
             default_mesh_compression: self.mesh_compression.clone(),
+            default_optimize_meshes: self.optimize_meshes,
         });
     }
 }
