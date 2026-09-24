@@ -25,7 +25,7 @@ mesh.optimize_vertex_fetch()?;
 ```
 
 The triangle reordering implements Tom Forsyth's
-[Linear-Speed Vertex Cache Optimisation](https://tomforsyth1000.github.io/papers/fast_vert_cache_opt.html),
+[Linear-Speed Vertex Cache Optimization](https://tomforsyth1000.github.io/papers/fast_vert_cache_opt.html),
 the same family of algorithms used by [meshoptimizer](https://github.com/zeux/meshoptimizer). It is
 written in pure Rust, so it works on every platform Bevy supports, including the web. Indices keep
 their format, triangle winding is preserved, and morph targets are reordered along with the other

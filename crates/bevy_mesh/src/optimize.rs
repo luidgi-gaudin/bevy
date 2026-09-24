@@ -17,7 +17,7 @@
 //! [`Mesh::analyze_vertex_fetch`].
 //!
 //! The triangle reordering is an implementation of Tom Forsyth's
-//! [Linear-Speed Vertex Cache Optimisation](https://tomforsyth1000.github.io/papers/fast_vert_cache_opt.html),
+//! [Linear-Speed Vertex Cache Optimization](https://tomforsyth1000.github.io/papers/fast_vert_cache_opt.html),
 //! the same family of algorithms that is used by tools like
 //! [meshoptimizer](https://github.com/zeux/meshoptimizer).
 
@@ -394,7 +394,7 @@ impl VertexScoreTable {
 }
 
 /// Reorders the triangles of a triangle list to improve the post-transform vertex cache hit rate,
-/// using Tom Forsyth's "Linear-Speed Vertex Cache Optimisation" algorithm.
+/// using Tom Forsyth's "Linear-Speed Vertex Cache Optimization" algorithm.
 ///
 /// The indices must be valid for `vertex_count` vertices, and their count must be a multiple of 3.
 fn optimize_vertex_cache(indices: &mut [u32], vertex_count: usize) {
