@@ -16,6 +16,16 @@ struct SimpleMesh {
     indices: Vec<u32>,
 }
 
+impl SimpleMesh {
+    /// Builds a BVH over the triangles of the mesh.
+    fn bvh(&self) -> ray_cast::TriangleBvh {
+        ray_cast::TriangleBvh::new(self.indices.len() / 3, |triangle| {
+            let [a, b, c] = self.indices.as_chunks::<3>().0[triangle];
+            Some([a, b, c].map(|i| Vec3::from(self.positions[i as usize])))
+        })
+    }
+}
+
 /// Selects a point within a normal square.
 ///
 /// `p` is an index within `0..vertices_per_side.pow(2)`. The returned value is a coordinate where
@@ -167,6 +177,51 @@ fn bench(c: &mut Criterion) {
                     });
                 },
             );
+
+            group.bench_with_input(
+                BenchmarkId::new("bvh", format!("{}_vertices", vertices_per_side.pow(2))),
+                &vertices_per_side,
+                |b, &vertices_per_side| {
+                    let ray = black_box(benchmark.ray());
+                    let mesh_to_world = black_box(benchmark.mesh_to_world());
+                    let mesh = black_box(create_mesh(vertices_per_side));
+                    let backface_culling = black_box(benchmark.backface_culling());
+                    let bvh = mesh.bvh();
+
+                    b.iter(|| {
+                        let intersected = ray_cast::ray_mesh_intersection_with_bvh(
+                            ray,
+                            &mesh_to_world,
+                            &mesh.positions,
+                            Some(&mesh.normals),
+                            Some(&mesh.indices),
+                            None,
+                            backface_culling,
+                            Some(&bvh),
+                        );
+
+                        #[cfg(test)]
+                        assert_eq!(intersected.is_some(), benchmark.should_intersect());
+
+                        intersected
+                    });
+                },
+            );
         }
+
+        group.finish();
     }
+
+    let mut group = c.benchmark_group(bench!("build_bvh"));
+    for vertices_per_side in Benchmarks::VERTICES_PER_SIDE {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{}_vertices", vertices_per_side.pow(2))),
+            &vertices_per_side,
+            |b, &vertices_per_side| {
+                let mesh = create_mesh(vertices_per_side);
+                b.iter(|| black_box(mesh.bvh()));
+            },
+        );
+    }
+    group.finish();
 }

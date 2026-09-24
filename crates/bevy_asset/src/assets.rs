@@ -521,6 +521,15 @@ impl<A: Asset> Assets<A> {
         self.dense_storage.len() + self.hash_map.len()
     }
 
+    /// Returns `true` if this collection was changed in a way that queued [`AssetEvent`]s which
+    /// haven't been written yet.
+    ///
+    /// Queued events are written by the [`AssetEventSystems`](crate::AssetEventSystems) system set,
+    /// in `PostUpdate`.
+    pub fn has_pending_events(&self) -> bool {
+        !self.queued_events.is_empty()
+    }
+
     /// Returns an iterator over the [`AssetId`] of every [`Asset`] stored in this collection.
     pub fn ids(&self) -> impl Iterator<Item = AssetId<A>> + '_ {
         self.dense_storage
@@ -615,7 +624,7 @@ impl<A: Asset> Assets<A> {
     ///
     /// [`asset_events`]: Self::asset_events
     pub(crate) fn asset_events_condition(assets: Res<Self>) -> bool {
-        !assets.queued_events.is_empty()
+        assets.has_pending_events()
     }
 }
 

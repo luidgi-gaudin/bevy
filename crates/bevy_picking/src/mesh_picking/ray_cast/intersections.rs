@@ -3,7 +3,7 @@ use bevy_mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy_reflect::Reflect;
 use bevy_shape::{Aabb3d, Ray3d};
 
-use super::Backfaces;
+use super::{Backfaces, TriangleBvh};
 
 /// Hit data for an intersection between a ray and a mesh.
 #[derive(Debug, Clone, Reflect)]
@@ -37,11 +37,15 @@ pub struct RayTriangleHit {
 }
 
 /// Casts a ray on a mesh, and returns the intersection.
+///
+/// If a `bvh` built with [`build_bvh`] for the current mesh data is given, it is used to
+/// speed up the search for the closest triangle.
 pub(super) fn ray_intersection_over_mesh(
     mesh: &Mesh,
     transform: &Affine3A,
     ray: Ray3d,
     cull: Backfaces,
+    bvh: Option<&TriangleBvh>,
 ) -> Option<RayMeshHit> {
     if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
         return None; // ray_mesh_intersection assumes vertices are laid out in a triangle list
@@ -67,13 +71,89 @@ pub(super) fn ray_intersection_over_mesh(
         });
 
     match mesh.try_indices().ok() {
+        Some(Indices::U16(indices)) => ray_mesh_intersection_with_bvh(
+            ray,
+            transform,
+            positions,
+            normals,
+            Some(indices),
+            uvs,
+            cull,
+            bvh,
+        ),
+        Some(Indices::U32(indices)) => ray_mesh_intersection_with_bvh(
+            ray,
+            transform,
+            positions,
+            normals,
+            Some(indices),
+            uvs,
+            cull,
+            bvh,
+        ),
+        None => ray_mesh_intersection_with_bvh::<u32>(
+            ray, transform, positions, normals, None, uvs, cull, bvh,
+        ),
+    }
+}
+
+/// Returns the vertex positions and indices of a mesh that can be ray cast.
+pub(super) fn mesh_triangles(mesh: &Mesh) -> Option<(&[[f32; 3]], Option<&Indices>)> {
+    if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
+        return None;
+    }
+    let positions = mesh
+        .try_attribute(Mesh::ATTRIBUTE_POSITION)
+        .ok()?
+        .as_float3()?;
+    Some((positions, mesh.try_indices().ok()))
+}
+
+/// Returns the number of triangles of a mesh with the given vertex positions and indices.
+pub(super) fn triangle_count(positions: &[[f32; 3]], indices: Option<&Indices>) -> usize {
+    match indices {
+        Some(indices) => indices.len() / 3,
+        None => positions.len() / 3,
+    }
+}
+
+/// Builds a [`TriangleBvh`] to speed up ray casts against a mesh with the given vertex positions
+/// and indices.
+pub(super) fn build_bvh(positions: &[[f32; 3]], indices: Option<&Indices>) -> TriangleBvh {
+    let triangle_count = triangle_count(positions, indices);
+    match indices {
         Some(Indices::U16(indices)) => {
-            ray_mesh_intersection(ray, transform, positions, normals, Some(indices), uvs, cull)
+            TriangleBvh::new(triangle_count, triangle_vertices(positions, Some(indices)))
         }
         Some(Indices::U32(indices)) => {
-            ray_mesh_intersection(ray, transform, positions, normals, Some(indices), uvs, cull)
+            TriangleBvh::new(triangle_count, triangle_vertices(positions, Some(indices)))
         }
-        None => ray_mesh_intersection::<u32>(ray, transform, positions, normals, None, uvs, cull),
+        None => TriangleBvh::new(triangle_count, triangle_vertices::<u32>(positions, None)),
+    }
+}
+
+/// Returns a function that reads the vertex positions of a triangle, or returns `None` if the
+/// triangle references vertices that don't exist.
+fn triangle_vertices<'a, I>(
+    positions: &'a [[f32; 3]],
+    indices: Option<&'a [I]>,
+) -> impl Fn(usize) -> Option<[Vec3; 3]> + 'a
+where
+    I: TryInto<usize> + Clone + Copy,
+{
+    move |triangle| {
+        let [a, b, c] = match indices {
+            Some(indices) => {
+                let &[a, b, c] = indices.as_chunks().0.get(triangle)?;
+                [a.try_into().ok()?, b.try_into().ok()?, c.try_into().ok()?]
+            }
+            None => [triangle * 3, triangle * 3 + 1, triangle * 3 + 2],
+        };
+        Some([
+            Vec3::from(*positions.get(a)?),
+            Vec3::from(*positions.get(b)?),
+            Vec3::from(*positions.get(c)?),
+        ])
     }
 }
 
@@ -90,6 +170,38 @@ pub fn ray_mesh_intersection<I>(
 where
     I: TryInto<usize> + Clone + Copy,
 {
+    ray_mesh_intersection_with_bvh(
+        ray,
+        mesh_transform,
+        positions,
+        vertex_normals,
+        indices,
+        uvs,
+        backface_culling,
+        None,
+    )
+}
+
+/// Like [`ray_mesh_intersection`], but uses `bvh` to find the closest triangle if it is given and
+/// was built for the same number of triangles.
+///
+/// The BVH must have been built for the same `positions` and `indices`, with triangle `n` made of
+/// the vertices referenced by `indices[3 * n..3 * n + 3]`, or of `positions[3 * n..3 * n + 3]` if
+/// there are no indices. This gives the same result as [`ray_mesh_intersection`], but much faster
+/// for meshes with many triangles.
+pub fn ray_mesh_intersection_with_bvh<I>(
+    ray: Ray3d,
+    mesh_transform: &Affine3A,
+    positions: &[[f32; 3]],
+    vertex_normals: Option<&[[f32; 3]]>,
+    indices: Option<&[I]>,
+    uvs: Option<&[[f32; 2]]>,
+    backface_culling: Backfaces,
+    bvh: Option<&TriangleBvh>,
+) -> Option<RayMeshHit>
+where
+    I: TryInto<usize> + Clone + Copy,
+{
     let world_to_mesh = mesh_transform.inverse();
 
     let ray = Ray3d::new(
@@ -97,7 +209,20 @@ where
         Dir3::new(world_to_mesh.transform_vector3(*ray.direction)).ok()?,
     );
 
-    let closest_hit = if let Some(indices) = indices {
+    let triangle_count = match indices {
+        Some(indices) => indices.len() / 3,
+        None => positions.len() / 3,
+    };
+    let closest_hit = if let Some(bvh) = bvh.filter(|bvh| bvh.triangle_count() == triangle_count) {
+        if indices.is_some_and(|indices| indices.len() % 3 != 0) {
+            return None;
+        }
+        bvh.closest_hit(
+            &ray,
+            backface_culling,
+            triangle_vertices(positions, indices),
+        )
+    } else if let Some(indices) = indices {
         // The index list must be a multiple of three. If not, the mesh is malformed and the raycast
         // result might be nonsensical.
         if indices.len() % 3 != 0 {
@@ -231,7 +356,7 @@ where
 
 /// Takes a ray and triangle and computes the intersection.
 #[inline]
-fn ray_triangle_intersection(
+pub(super) fn ray_triangle_intersection(
     ray: &Ray3d,
     triangle: &[Vec3; 3],
     backface_culling: Backfaces,

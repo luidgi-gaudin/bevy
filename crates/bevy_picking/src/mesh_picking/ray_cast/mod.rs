@@ -2,9 +2,14 @@
 //!
 //! See the [`MeshRayCast`] system parameter for more information.
 
+mod bvh;
 mod intersections;
 
+use alloc::sync::Arc;
+use bevy_app::{App, Plugin, PostUpdate};
 use bevy_derive::{Deref, DerefMut};
+use bevy_tasks::AsyncComputeTaskPool;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use bevy_camera::{
     primitives::Aabb,
@@ -14,12 +19,18 @@ use bevy_mesh::{Mesh, Mesh2d, Mesh3d};
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
 use bevy_shape::{Aabb3d, Ray3d};
 
+pub use bvh::TriangleBvh;
 use intersections::*;
-pub use intersections::{ray_aabb_intersection_3d, ray_mesh_intersection, RayMeshHit};
+pub use intersections::{
+    ray_aabb_intersection_3d, ray_mesh_intersection, ray_mesh_intersection_with_bvh, RayMeshHit,
+};
 
-use bevy_asset::{Assets, Handle};
-use bevy_ecs::{prelude::*, system::lifetimeless::Read, system::SystemParam};
+use bevy_asset::{AssetEvent, AssetEventSystems, AssetId, Assets, Handle};
+use bevy_ecs::{
+    change_detection::Tick, prelude::*, system::lifetimeless::Read, system::SystemParam,
+};
 use bevy_math::FloatOrd;
+use bevy_platform::{collections::HashMap, sync::RwLock};
 use bevy_transform::components::GlobalTransform;
 use tracing::*;
 
@@ -114,6 +125,182 @@ pub struct RayCastBackfaces;
 #[reflect(Component, Debug, Clone)]
 pub struct SimplifiedMesh(pub Handle<Mesh>);
 
+/// Meshes with fewer triangles than this are always ray cast by testing all their triangles, as
+/// this is fast enough.
+const MIN_BVH_TRIANGLES: usize = 128;
+
+/// The BVHs of meshes with at least this many triangles are built in a background task, instead
+/// of blocking the ray cast that needs it for several milliseconds.
+const MIN_ASYNC_BVH_TRIANGLES: usize = 1 << 16;
+
+/// Adds the [`MeshRayCastCache`], which speeds up [`MeshRayCast`] ray casts against large meshes.
+///
+/// This is added by the [`MeshPickingPlugin`](super::MeshPickingPlugin).
+#[derive(Default)]
+pub struct MeshRayCastPlugin;
+
+impl Plugin for MeshRayCastPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<MeshRayCastCache>().add_systems(
+            PostUpdate,
+            sync_mesh_ray_cast_cache.after(AssetEventSystems),
+        );
+    }
+}
+
+/// Caches a [bounding volume hierarchy](TriangleBvh) for large meshes that are hit by
+/// [`MeshRayCast`] ray casts, so that only a few of their triangles need to be tested.
+///
+/// The BVH of a mesh is built the second time a ray is cast against it, and is dropped when the
+/// mesh is modified or removed. This makes the ray casts against large static meshes orders of
+/// magnitude faster, without slowing down ray casts against meshes that are modified every frame.
+/// The BVHs of very large meshes are built in a background task: until it completes, ray casts
+/// test all the triangles of these meshes.
+///
+/// Ray casts give exactly the same results with and without this cache. Cached BVHs are only used
+/// if the [`AssetEvent`]s of all the changes to the meshes have been processed: after a mesh is
+/// modified, ray casts go through all the triangles of the meshes until the end of the frame.
+/// Changes made to a mesh without sending an [`AssetEvent::Modified`] event (like with
+/// [`Assets::get_mut_untracked`]) are not detected.
+///
+/// Add the [`MeshRayCastPlugin`] to use this cache.
+#[derive(Resource, Default)]
+pub struct MeshRayCastCache {
+    /// This is shared with the tasks that build BVHs in the background.
+    entries: Arc<RwLock<HashMap<AssetId<Mesh>, CacheEntry>>>,
+    /// The change tick of [`Assets<Mesh>`] once all the [`AssetEvent`]s of the changes to the
+    /// meshes have been processed, or `None` if some of them haven't been sent yet.
+    ///
+    /// If `Assets<Mesh>` changed since then, a mesh might have been modified without the cache
+    /// knowing about it yet, so the cached BVHs can't be used.
+    synchronized_tick: Option<Tick>,
+    /// Identifies the background tasks that build BVHs.
+    next_task_id: AtomicU64,
+}
+
+enum CacheEntry {
+    /// A ray was cast once against the mesh since it was added or last modified.
+    CastOnce,
+    /// The BVH of the mesh is being built by the background task with this id.
+    Building(u64),
+    /// The BVH of the mesh.
+    Built(Arc<TriangleBvh>),
+}
+
+impl MeshRayCastCache {
+    /// Returns the BVH of a mesh, building it if the mesh has been ray cast before.
+    ///
+    /// Returns `None` if the mesh has few triangles, if it is its first ray cast since it was
+    /// modified, if its BVH is being built, or if meshes might have been modified since the cache
+    /// was last synchronized.
+    fn bvh(
+        &self,
+        id: AssetId<Mesh>,
+        mesh: &Mesh,
+        meshes_changed_tick: Tick,
+    ) -> Option<Arc<TriangleBvh>> {
+        if self.synchronized_tick != Some(meshes_changed_tick) {
+            return None;
+        }
+        let (positions, indices) = mesh_triangles(mesh)?;
+        let triangle_count = triangle_count(positions, indices);
+        if triangle_count < MIN_BVH_TRIANGLES {
+            return None;
+        }
+
+        // Release the read lock before taking the write lock.
+        let entry = self
+            .entries
+            .read()
+            .unwrap()
+            .get(&id)
+            .map(|entry| match entry {
+                CacheEntry::CastOnce => Ok(()),
+                CacheEntry::Building(_) => Err(None),
+                CacheEntry::Built(bvh) => Err(Some(bvh.clone())),
+            });
+        match entry {
+            Some(Err(bvh)) => return bvh,
+            Some(Ok(())) => {}
+            None => {
+                self.entries
+                    .write()
+                    .unwrap()
+                    .insert(id, CacheEntry::CastOnce);
+                return None;
+            }
+        }
+
+        if triangle_count >= MIN_ASYNC_BVH_TRIANGLES
+            && let Some(task_pool) = AsyncComputeTaskPool::try_get()
+        {
+            let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
+            self.entries
+                .write()
+                .unwrap()
+                .insert(id, CacheEntry::Building(task_id));
+            // The mesh can be modified while the BVH is being built, so the task needs its own
+            // copy of the data. If the mesh is modified, the cache entry is removed, so the BVH
+            // built from the old data will not be used.
+            let positions = positions.to_vec();
+            let indices = indices.cloned();
+            let entries = self.entries.clone();
+            task_pool
+                .spawn(async move {
+                    let bvh = {
+                        let _span = debug_span!("build_mesh_bvh").entered();
+                        build_bvh(&positions, indices.as_ref())
+                    };
+                    if let Some(entry) = entries.write().unwrap().get_mut(&id)
+                        && matches!(entry, CacheEntry::Building(id) if *id == task_id)
+                    {
+                        *entry = CacheEntry::Built(Arc::new(bvh));
+                    }
+                })
+                .detach();
+            return None;
+        }
+
+        let bvh = {
+            let _span = debug_span!("build_mesh_bvh").entered();
+            Arc::new(build_bvh(positions, indices))
+        };
+        self.entries
+            .write()
+            .unwrap()
+            .insert(id, CacheEntry::Built(bvh.clone()));
+        Some(bvh)
+    }
+
+    /// Removes all the cached BVHs.
+    pub fn clear(&mut self) {
+        self.entries.write().unwrap().clear();
+    }
+}
+
+/// Drops the cached BVHs of the meshes that were modified or removed.
+pub fn sync_mesh_ray_cast_cache(
+    mut cache: ResMut<MeshRayCastCache>,
+    mut mesh_events: MessageReader<AssetEvent<Mesh>>,
+    meshes: Res<Assets<Mesh>>,
+) {
+    let cache = cache.bypass_change_detection();
+    let mut entries = cache.entries.write().unwrap();
+    for event in mesh_events.read() {
+        match event {
+            AssetEvent::Added { id }
+            | AssetEvent::Modified { id }
+            | AssetEvent::Removed { id }
+            | AssetEvent::Unused { id } => {
+                entries.remove(id);
+            }
+            AssetEvent::LoadedWithDependencies { .. } => {}
+        }
+    }
+    drop(entries);
+    cache.synchronized_tick = (!meshes.has_pending_events()).then(|| meshes.last_changed());
+}
+
 type MeshFilter = Or<(With<Mesh3d>, With<Mesh2d>, With<SimplifiedMesh>)>;
 
 /// Add this ray casting [`SystemParam`] to your system to cast rays into the world with an
@@ -175,6 +362,8 @@ type MeshFilter = Or<(With<Mesh3d>, With<Mesh2d>, With<SimplifiedMesh>)>;
 pub struct MeshRayCast<'w, 's> {
     #[doc(hidden)]
     pub meshes: Res<'w, Assets<Mesh>>,
+    #[doc(hidden)]
+    pub cache: Option<Res<'w, MeshRayCastCache>>,
     #[doc(hidden)]
     pub hits: Local<'s, Vec<(FloatOrd, (Entity, RayMeshHit))>>,
     #[doc(hidden)]
@@ -293,7 +482,11 @@ impl<'w, 's> MeshRayCast<'w, 's> {
                 // Perform the actual ray cast.
                 let _ray_cast_guard = ray_cast_guard.enter();
                 let transform = transform.affine();
-                let intersection = ray_intersection_over_mesh(mesh, &transform, ray, backfaces);
+                let bvh = self.cache.as_ref().and_then(|cache| {
+                    cache.bvh(mesh_handle.id(), mesh, self.meshes.last_changed())
+                });
+                let intersection =
+                    ray_intersection_over_mesh(mesh, &transform, ray, backfaces, bvh.as_deref());
 
                 if let Some(intersection) = intersection {
                     let distance = FloatOrd(intersection.distance);
@@ -314,5 +507,237 @@ impl<'w, 's> MeshRayCast<'w, 's> {
         let hits = self.hits.iter().map(|(_, (e, i))| (*e, i.to_owned()));
         self.output.extend(hits);
         self.output.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_app::{TaskPoolPlugin, Update};
+    use bevy_asset::{AssetPlugin, RenderAssetUsages};
+    use bevy_math::{ops, Affine3A, Dir3, Quat, Vec3};
+    use bevy_mesh::{Indices, MeshBuilder, MeshPlugin, Meshable, PrimitiveTopology};
+    use bevy_shape::{Sphere, Torus};
+
+    /// A flat grid of `size` x `size` quads in the XZ plane, facing up.
+    fn grid(size: u32) -> Mesh {
+        let row = size + 1;
+        let positions: Vec<[f32; 3]> = (0..row * row)
+            .map(|i| [(i % row) as f32, 0.0, (i / row) as f32])
+            .collect();
+        let mut indices = Vec::new();
+        for z in 0..size {
+            for x in 0..size {
+                let i = z * row + x;
+                indices.extend([i, i + row, i + 1, i + 1, i + row, i + row + 1]);
+            }
+        }
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_indices(Indices::U32(indices))
+    }
+
+    #[test]
+    fn bvh_gives_the_same_hits() {
+        let meshes = [
+            grid(20),
+            Sphere::new(1.0).mesh().uv(32, 18),
+            Torus::default().mesh().build(),
+        ];
+        let transform = Affine3A::from_scale_rotation_translation(
+            Vec3::new(2.0, 1.0, 0.5),
+            Quat::from_rotation_y(0.4),
+            Vec3::new(1.0, 2.0, 3.0),
+        );
+        for mesh in &meshes {
+            let (positions, indices) = mesh_triangles(mesh).unwrap();
+            let bvh = build_bvh(positions, indices);
+            for i in 0..200 {
+                let angle = i as f32 * 0.37;
+                let origin = transform.transform_point3(Vec3::new(
+                    5.0 * ops::cos(angle),
+                    3.0 + (i % 7) as f32 - 3.0,
+                    5.0 * ops::sin(angle),
+                ));
+                let target = transform.transform_point3(Vec3::new(
+                    (i % 5) as f32 * 0.4,
+                    0.0,
+                    (i % 3) as f32 * 0.3,
+                ));
+                let ray = Ray3d::new(origin, Dir3::new(target - origin).unwrap());
+                for backfaces in [Backfaces::Cull, Backfaces::Include] {
+                    let expected =
+                        ray_intersection_over_mesh(mesh, &transform, ray, backfaces, None);
+                    let actual =
+                        ray_intersection_over_mesh(mesh, &transform, ray, backfaces, Some(&bvh));
+                    assert_eq!(
+                        expected
+                            .as_ref()
+                            .map(|hit| (hit.triangle_index, hit.distance, hit.point)),
+                        actual
+                            .as_ref()
+                            .map(|hit| (hit.triangle_index, hit.distance, hit.point)),
+                    );
+                }
+            }
+        }
+    }
+
+    #[derive(Resource)]
+    struct TestMesh(Handle<Mesh>);
+
+    #[derive(Resource, Default)]
+    struct TestHits(Vec<Option<f32>>);
+
+    #[derive(Resource, Default)]
+    struct MoveMesh(bool);
+
+    /// Moves the test mesh 10 units along the X axis, if requested.
+    fn move_mesh(
+        mut move_mesh: ResMut<MoveMesh>,
+        test_mesh: Res<TestMesh>,
+        mut meshes: ResMut<Assets<Mesh>>,
+    ) {
+        if core::mem::take(&mut move_mesh.0) {
+            meshes
+                .get_mut(&test_mesh.0)
+                .unwrap()
+                .translate_by(Vec3::X * -10.0);
+        }
+    }
+
+    /// Casts a ray down on the test mesh, after it was moved.
+    fn cast_ray(mut ray_cast: MeshRayCast, mut hits: ResMut<TestHits>) {
+        let ray = Ray3d::new(Vec3::new(103.3, 10.0, 4.7), Dir3::NEG_Y);
+        let settings = MeshRayCastSettings::default().with_visibility(RayCastVisibility::Any);
+        let hit = ray_cast
+            .cast_ray(ray, &settings)
+            .first()
+            .map(|(_, hit)| hit.distance);
+        hits.0.push(hit);
+    }
+
+    fn cache_entry(app: &App, test_mesh: &Handle<Mesh>) -> Option<&'static str> {
+        let cache = app.world().resource::<MeshRayCastCache>();
+        let entries = cache.entries.read().unwrap();
+        entries.get(&test_mesh.id()).map(|entry| match entry {
+            CacheEntry::CastOnce => "cast once",
+            CacheEntry::Building(_) => "building",
+            CacheEntry::Built(_) => "built",
+        })
+    }
+
+    /// An app that casts a ray on a grid of `size` x `size` quads every frame.
+    fn test_app(size: u32) -> (App, Handle<Mesh>) {
+        let mut app = App::new();
+        app.add_plugins((
+            TaskPoolPlugin::default(),
+            AssetPlugin::default(),
+            MeshPlugin,
+            MeshRayCastPlugin,
+        ))
+        .init_resource::<TestHits>()
+        .init_resource::<MoveMesh>()
+        .add_systems(Update, (move_mesh, cast_ray).chain());
+
+        // Move the grid so that the ray hits it.
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(grid(size).translated_by(Vec3::X * 100.0));
+        app.insert_resource(TestMesh(mesh.clone()));
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            Aabb::from_min_max(Vec3::new(0.0, -1.0, 0.0), Vec3::new(400.0, 1.0, 300.0)),
+            GlobalTransform::IDENTITY,
+            InheritedVisibility::VISIBLE,
+            ViewVisibility::VISIBLE,
+        ));
+        (app, mesh)
+    }
+
+    /// Updates the app until the BVH of the mesh has been built in the background.
+    fn update_until_built(app: &mut App, mesh: &Handle<Mesh>) {
+        let start = std::time::Instant::now();
+        while cache_entry(app, mesh) != Some("built") {
+            assert!(matches!(
+                cache_entry(app, mesh),
+                Some("cast once" | "building")
+            ));
+            assert!(start.elapsed().as_secs() < 60, "the BVH was never built");
+            std::thread::sleep(core::time::Duration::from_millis(1));
+            app.update();
+        }
+    }
+
+    #[test]
+    fn large_meshes_are_built_in_the_background() {
+        let (mut app, mesh) = test_app(192);
+
+        app.update();
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), Some("cast once"));
+        app.update();
+        update_until_built(&mut app, &mesh);
+
+        // Modify the mesh, and modify it again while its new BVH is being built: the BVH of the
+        // intermediate mesh must never be used.
+        app.world_mut().resource_mut::<MoveMesh>().0 = true;
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), None);
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), Some("cast once"));
+        app.update();
+        // The BVH may already have been built, if the task was fast enough.
+        assert!(matches!(
+            cache_entry(&app, &mesh),
+            Some("building" | "built")
+        ));
+        app.world_mut().resource_mut::<MoveMesh>().0 = true;
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), None);
+        app.update();
+        app.update();
+        update_until_built(&mut app, &mesh);
+        for _ in 0..10 {
+            app.update();
+        }
+
+        let hits = &app.world().resource::<TestHits>().0;
+        assert!(hits.iter().all(|&hit| hit == Some(10.0)), "{hits:?}");
+    }
+
+    #[test]
+    fn cache_is_built_and_invalidated() {
+        let (mut app, mesh) = test_app(32);
+
+        // The mesh was just added, so the cache can't be used.
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), None);
+        // The BVH is built the second time the mesh is ray cast.
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), Some("cast once"));
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), Some("built"));
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), Some("built"));
+
+        // Move the mesh, and cast the ray right after in the same frame: the ray still hits the
+        // mesh, but not in any of the boxes of the BVH that was built before the move. The stale
+        // BVH must not be used, even though the modification hasn't been processed yet.
+        app.world_mut().resource_mut::<MoveMesh>().0 = true;
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), None);
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), Some("cast once"));
+        app.update();
+        assert_eq!(cache_entry(&app, &mesh), Some("built"));
+
+        let hits = &app.world().resource::<TestHits>().0;
+        assert_eq!(hits.len(), 7);
+        assert!(hits.iter().all(|&hit| hit == Some(10.0)), "{hits:?}");
     }
 }
