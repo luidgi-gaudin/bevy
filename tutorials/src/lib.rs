@@ -16,6 +16,9 @@ extern crate self as bevy_tutorials;
 
 pub mod outils;
 
+#[cfg(feature = "jeu")]
+pub mod affichage;
+
 pub mod chapitre_01 {
     //! Premiers pas : l'application, les systèmes et les ressources.
     pub mod solution;

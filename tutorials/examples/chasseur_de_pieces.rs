@@ -12,6 +12,7 @@
 //! fonctionnalité `exercice` : `--features jeu,exercice`.
 
 use bevy::prelude::*;
+use bevy_tutorials::affichage::police_avec_accents;
 
 #[cfg(not(feature = "exercice"))]
 use bevy_tutorials::chapitre_09::solution as jeu;
@@ -42,6 +43,8 @@ fn main() {
                 }),
                 ..default()
             }),
+            // La police par défaut de Bevy n'a pas les accents du français.
+            police_avec_accents,
             JeuPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.1)))

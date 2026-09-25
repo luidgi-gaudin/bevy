@@ -169,6 +169,29 @@ app.update(); // le changement a lieu au début de cette image
 let etat = *app.world().resource::<State<EtatJeu>>().get();
 ```
 
+## Tester à tick fixe
+
+Les chapitres 11 à 17 simulent le jeu dans `FixedUpdate`, à 128 ticks par seconde. À chaque
+image, Bevy exécute autant de ticks que nécessaire : une image de 100 ms en contient 12 ou 13.
+
+```rust
+// Exactement un tick (1/128 s) :
+image(&mut app, Duration::from_nanos(7_812_500));
+
+// La souris, comme le clavier, n'existe pas sans fenêtre :
+app.init_resource::<AccumulatedMouseMotion>();
+app.world_mut().resource_mut::<AccumulatedMouseMotion>().delta = Vec2::new(100.0, 0.0);
+```
+
+- **Le déterminisme se teste** : simulez la même partie à deux rythmes d'images différents, et
+  comparez les positions avec `assert_eq!`, au bit près (chapitre 11). Ici, `proche` cacherait
+  justement les écarts que l'on veut détecter.
+- **Les messages ne vivent que deux images** : pour compter les balles tirées pendant plusieurs
+  secondes, enregistrez-les au fur et à mesure avec un système, comme `compter_les_tirs` au
+  chapitre 16.
+- **Testez une situation, pas une partie entière** : placez un tireur et une cible au mètre
+  près, tirez une balle, et vérifiez qui est touché (chapitres 13, 14 et 17).
+
 ## Les paniques attendues
 
 Pour vérifier qu'un code s'arrête avec une erreur :
@@ -187,6 +210,18 @@ règles sont entièrement testées, et l'affichage, simple, se vérifie en jouan
 
 Pour vérifier l'affichage automatiquement, Bevy peut prendre des captures d'écran pendant
 l'exécution d'un exemple : voir la fonctionnalité `bevy_ci_testing` dans `docs/cargo_features.md`.
+Par exemple, pour trois captures de l'arène FPS, à 1, 5 et 10 secondes de jeu :
+
+```sh
+cat > captures.ron <<'FIN'
+(
+    setup: (fixed_frame_time: Some(0.0166667)),
+    events: [(60, Screenshot), (300, Screenshot), (600, Screenshot), (605, AppExit)],
+)
+FIN
+CI_TESTING_CONFIG=captures.ron \
+  cargo run -p bevy_tutorials --example arene_fps --features jeu,bevy/bevy_ci_testing
+```
 
 ## Des tests qui aident
 

@@ -38,6 +38,12 @@ test = false
 name = "chasseur_de_pieces"
 required-features = ["jeu"]
 
+# Les chapitres 10 à 17 réunis dans un match à mort contre des bots :
+# `cargo run -p bevy_tutorials --example arene_fps --features jeu --release`
+[[example]]
+name = "arene_fps"
+required-features = ["jeu"]
+
 [lints.clippy]
 # Les requêtes de Bevy ont souvent des types longs : c'est normal, Bevy fait de même.
 type_complexity = "allow"
