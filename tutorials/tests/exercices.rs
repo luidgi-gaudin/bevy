@@ -53,3 +53,12 @@ mod chapitre_13;
 
 #[path = "../src/chapitre_14/exercice.rs"]
 mod chapitre_14;
+
+#[path = "../src/chapitre_15/exercice.rs"]
+mod chapitre_15;
+
+#[path = "../src/chapitre_16/exercice.rs"]
+mod chapitre_16;
+
+#[path = "../src/chapitre_17/exercice.rs"]
+mod chapitre_17;

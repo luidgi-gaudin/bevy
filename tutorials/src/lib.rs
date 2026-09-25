@@ -87,3 +87,18 @@ pub mod chapitre_14 {
     //! FPS : la visée, le recul et la dispersion.
     pub mod solution;
 }
+
+pub mod chapitre_15 {
+    //! FPS : le match à mort.
+    pub mod solution;
+}
+
+pub mod chapitre_16 {
+    //! FPS : des bots pour s'entraîner.
+    pub mod solution;
+}
+
+pub mod chapitre_17 {
+    //! FPS : la compensation de latence.
+    pub mod solution;
+}
