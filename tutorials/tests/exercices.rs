@@ -38,3 +38,18 @@ mod chapitre_08;
 
 #[path = "../src/chapitre_09/exercice.rs"]
 mod chapitre_09;
+
+#[path = "../src/chapitre_10/exercice.rs"]
+mod chapitre_10;
+
+#[path = "../src/chapitre_11/exercice.rs"]
+mod chapitre_11;
+
+#[path = "../src/chapitre_12/exercice.rs"]
+mod chapitre_12;
+
+#[path = "../src/chapitre_13/exercice.rs"]
+mod chapitre_13;
+
+#[path = "../src/chapitre_14/exercice.rs"]
+mod chapitre_14;

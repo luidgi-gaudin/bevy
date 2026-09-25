@@ -23,6 +23,7 @@ bevy = { path = "..", version = "0.20.0-dev", default-features = false, features
   "bevy_log",
   "bevy_state",
   "keyboard",
+  "mouse",
 ] }
 
 # Les exercices contiennent des `todo!()`, leurs tests échouent tant qu'ils ne sont pas faits. Ils

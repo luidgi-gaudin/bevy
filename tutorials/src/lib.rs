@@ -60,3 +60,30 @@ pub mod chapitre_09 {
     //! Le projet final : « Chasseur de pièces ».
     pub mod solution;
 }
+
+// La piste FPS : le cœur d'un FPS compétitif, chapitre après chapitre.
+
+pub mod chapitre_10 {
+    //! FPS : viser à la souris.
+    pub mod solution;
+}
+
+pub mod chapitre_11 {
+    //! FPS : se déplacer à tick fixe.
+    pub mod solution;
+}
+
+pub mod chapitre_12 {
+    //! FPS : les collisions avec la carte.
+    pub mod solution;
+}
+
+pub mod chapitre_13 {
+    //! FPS : les armes hitscan, les hitbox et les dégâts.
+    pub mod solution;
+}
+
+pub mod chapitre_14 {
+    //! FPS : la visée, le recul et la dispersion.
+    pub mod solution;
+}
