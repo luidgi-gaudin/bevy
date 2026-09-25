@@ -43,6 +43,8 @@ members = [
   "tools/*",
   # Bevy's error codes. This is a crate so we can automatically check all of the code blocks.
   "errors",
+  # Tutorials, in French, with ready-made tests.
+  "tutorials",
 ]
 exclude = [
   # Integration tests are not part of the workspace

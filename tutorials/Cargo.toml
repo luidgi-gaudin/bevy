@@ -1,0 +1,43 @@
+[package]
+name = "bevy_tutorials"
+version = "0.1.0"
+edition = "2024"
+description = "Tutoriels progressifs pour apprendre Bevy, avec des tests prêts à l'emploi"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+# Active la fenêtre, le rendu 2D et 3D et l'interface, pour jouer aux jeux des tutoriels :
+# `cargo run -p bevy_tutorials --example chasseur_de_pieces --features jeu`
+jeu = ["bevy/2d", "bevy/3d", "bevy/ui"]
+# Avec `jeu`, joue à votre version du projet final (`src/chapitre_09/exercice.rs`) au lieu de la
+# solution : `cargo run -p bevy_tutorials --example chasseur_de_pieces --features jeu,exercice`
+exercice = []
+
+[dependencies]
+# Les tests n'ont besoin ni de fenêtre ni de rendu : ils compilent beaucoup plus vite ainsi.
+bevy = { path = "..", version = "0.20.0-dev", default-features = false, features = [
+  "std",
+  "async_executor",
+  "multi_threaded",
+  "bevy_log",
+  "bevy_state",
+  "keyboard",
+] }
+
+# Les exercices contiennent des `todo!()`, leurs tests échouent tant qu'ils ne sont pas faits. Ils
+# ne sont donc lancés que quand on le demande :
+# `cargo test -p bevy_tutorials --test exercices`
+[[test]]
+name = "exercices"
+path = "tests/exercices.rs"
+test = false
+
+[[example]]
+name = "chasseur_de_pieces"
+required-features = ["jeu"]
+
+[lints.clippy]
+# Les requêtes de Bevy ont souvent des types longs : c'est normal, Bevy fait de même.
+type_complexity = "allow"
+too_many_arguments = "allow"
