@@ -115,6 +115,18 @@ impl Aabb {
         .dot(half_extents)
     }
 
+    /// Calculate the radius of a sphere centered on the AABB that contains the whole AABB once
+    /// transformed by `world_from_local`, even when the transform has shear.
+    #[inline]
+    pub fn bounding_sphere_radius(&self, world_from_local: &Mat3A) -> f32 {
+        Vec3A::new(
+            world_from_local.x_axis.length(),
+            world_from_local.y_axis.length(),
+            world_from_local.z_axis.length(),
+        )
+        .dot(self.half_extents)
+    }
+
     #[inline]
     pub fn min(&self) -> Vec3A {
         self.center - self.half_extents
@@ -290,6 +302,62 @@ impl Frustum {
         true
     }
 
+    /// Checks if an Oriented Bounding Box (obb) intersects the frustum, testing its bounding sphere
+    /// first.
+    ///
+    /// This returns the same result as [`Frustum::intersects_sphere`] for the sphere of radius
+    /// `bounding_radius` centered on the obb, followed by [`Frustum::intersects_obb`], both
+    /// against the same planes. It is faster than calling them one after the other: the center of
+    /// the obb is only transformed once, and the obb is only tested against the planes its center
+    /// is outside of, since it can't be outside of the others. For an obb whose center is inside
+    /// the frustum, the common case for visible entities, that is two dot products per plane
+    /// instead of six.
+    ///
+    /// When the sphere contains the whole obb, as with [`Aabb::bounding_sphere_radius`], the
+    /// result is the same as [`Frustum::intersects_obb`] alone.
+    #[inline]
+    pub fn intersects_obb_with_bounding_sphere(
+        &self,
+        aabb: &Aabb,
+        world_from_local: &Affine3A,
+        bounding_radius: f32,
+        intersect_near: bool,
+        intersect_far: bool,
+    ) -> bool {
+        let aabb_center_world = world_from_local.transform_point3a(aabb.center).extend(1.0);
+        let max = if intersect_far {
+            ViewFrustum::FAR_PLANE_IDX
+        } else {
+            ViewFrustum::NEAR_PLANE_IDX
+        };
+        let half_spaces = &self.half_spaces[..=max];
+        let skip_near = |idx| idx == ViewFrustum::NEAR_PLANE_IDX && !intersect_near;
+
+        // First, the bounding sphere: a single dot product per plane, which is enough to reject
+        // most of the obbs outside of the frustum.
+        for (idx, half_space) in half_spaces.iter().enumerate() {
+            if !skip_near(idx)
+                && half_space.normal_d().dot(aabb_center_world) + bounding_radius <= 0.0
+            {
+                return false;
+            }
+        }
+
+        // Then the obb, but only against the planes its center is outside of: it can't be
+        // outside of the others.
+        for (idx, half_space) in half_spaces.iter().enumerate() {
+            let distance = half_space.normal_d().dot(aabb_center_world);
+            if !skip_near(idx)
+                && distance <= 0.0
+                && distance + aabb.relative_radius(&half_space.normal(), &world_from_local.matrix3)
+                    <= 0.0
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Optimized version of [`Frustum::intersects_obb`]
     /// where the transform is [`Affine3A::IDENTITY`] and both `intersect_near` and `intersect_far` are `true`.
     #[inline]
@@ -448,7 +516,7 @@ pub struct CascadesFrusta {
 mod tests {
     use core::f32::consts::PI;
 
-    use bevy_math::{ops, Quat, Vec4};
+    use bevy_math::{ops, EulerRot, Quat, Vec4};
     use bevy_transform::components::GlobalTransform;
 
     use crate::{CameraProjection, PerspectiveProjection};
@@ -849,6 +917,122 @@ mod tests {
                 let standard = fr.intersects_obb(aabb, &Affine3A::IDENTITY, true, true);
                 let optimized = fr.intersects_obb_identity(aabb);
                 assert_eq!(standard, optimized);
+            }
+        }
+    }
+
+    /// Pseudo-random boxes around the test frusta, with rotations, non-uniform scales and shears.
+    fn random_obbs() -> Vec<(Aabb, Affine3A)> {
+        // A small xorshift generator, so that the tests are deterministic.
+        let mut state = 0x2545_f491_u32;
+        let mut random = move |min: f32, max: f32| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            min + (max - min) * (state as f32 / u32::MAX as f32)
+        };
+        (0..2000)
+            .map(|_| {
+                let aabb = Aabb {
+                    center: Vec3A::new(random(-1.0, 1.0), random(-1.0, 1.0), random(-1.0, 1.0)),
+                    half_extents: Vec3A::new(random(0.0, 2.0), random(0.0, 2.0), random(0.0, 2.0)),
+                };
+                let mut world_from_local = Affine3A::from_scale_rotation_translation(
+                    Vec3::new(random(0.1, 3.0), random(0.1, 3.0), random(0.1, 3.0)),
+                    Quat::from_euler(
+                        EulerRot::YXZ,
+                        random(-PI, PI),
+                        random(-PI, PI),
+                        random(-PI, PI),
+                    ),
+                    Vec3::new(
+                        random(-15.0, 15.0),
+                        random(-15.0, 15.0),
+                        random(-15.0, 15.0),
+                    ),
+                );
+                // Shear, as with an entity rotated under a parent with a non-uniform scale.
+                world_from_local.matrix3.y_axis +=
+                    world_from_local.matrix3.x_axis * random(-1.0, 1.0);
+                (aabb, world_from_local)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn intersects_obb_with_bounding_sphere_matches_sphere_then_obb() {
+        for frustum in [frustum(), long_frustum(), big_frustum()] {
+            for (aabb, world_from_local) in random_obbs() {
+                let radius =
+                    GlobalTransform::from(world_from_local).radius_vec3a(aabb.half_extents);
+                let sphere = Sphere {
+                    center: world_from_local.transform_point3a(aabb.center),
+                    radius,
+                };
+                for intersect_far in [false, true] {
+                    assert_eq!(
+                        frustum.intersects_obb_with_bounding_sphere(
+                            &aabb,
+                            &world_from_local,
+                            radius,
+                            true,
+                            intersect_far
+                        ),
+                        frustum.intersects_sphere(&sphere, intersect_far)
+                            && frustum.intersects_obb(
+                                &aabb,
+                                &world_from_local,
+                                true,
+                                intersect_far
+                            ),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn intersects_obb_with_bounding_sphere_matches_obb_when_the_sphere_contains_it() {
+        for frustum in [frustum(), long_frustum(), big_frustum()] {
+            for (aabb, world_from_local) in random_obbs() {
+                let radius = aabb.bounding_sphere_radius(&world_from_local.matrix3);
+                for (intersect_near, intersect_far) in
+                    [(false, false), (false, true), (true, false), (true, true)]
+                {
+                    assert_eq!(
+                        frustum.intersects_obb_with_bounding_sphere(
+                            &aabb,
+                            &world_from_local,
+                            radius,
+                            intersect_near,
+                            intersect_far
+                        ),
+                        frustum.intersects_obb(
+                            &aabb,
+                            &world_from_local,
+                            intersect_near,
+                            intersect_far
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounding_sphere_radius_contains_the_corners() {
+        for (aabb, world_from_local) in random_obbs() {
+            let center = world_from_local.transform_point3a(aabb.center);
+            let radius = aabb.bounding_sphere_radius(&world_from_local.matrix3);
+            for x in [-1.0, 1.0] {
+                for y in [-1.0, 1.0] {
+                    for z in [-1.0, 1.0] {
+                        let corner = world_from_local.transform_point3a(
+                            aabb.center + aabb.half_extents * Vec3A::new(x, y, z),
+                        );
+                        assert!(corner.distance(center) <= radius * (1.0 + 1e-5));
+                    }
+                }
             }
         }
     }

@@ -822,17 +822,15 @@ pub fn check_visibility_cpu_culling(
                 // If we have an aabb or a bounding sphere, do frustum culling
                 if !no_frustum_culling && !no_cpu_culling_camera {
                     if let Some(model_aabb) = maybe_model_aabb {
-                        let world_from_local = transform.affine();
-                        let model_sphere = Sphere {
-                            center: world_from_local.transform_point3a(model_aabb.center),
-                            radius: transform.radius_vec3a(model_aabb.half_extents),
-                        };
-                        // Do quick sphere-based frustum culling
-                        if !frustum.intersects_sphere(&model_sphere, false) {
-                            return;
-                        }
-                        // Do aabb-based frustum culling
-                        if !frustum.intersects_obb(model_aabb, &world_from_local, true, false) {
+                        // Do quick sphere-based frustum culling, then aabb-based frustum culling
+                        // against the planes that cut the sphere.
+                        if !frustum.intersects_obb_with_bounding_sphere(
+                            model_aabb,
+                            &transform.affine(),
+                            transform.radius_vec3a(model_aabb.half_extents),
+                            true,
+                            false,
+                        ) {
                             return;
                         }
                     } else if let Some(model_sphere) = maybe_model_sphere

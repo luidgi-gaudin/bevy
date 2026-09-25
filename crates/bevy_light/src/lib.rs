@@ -448,6 +448,9 @@ pub fn check_dir_light_mesh_visibility(
                     }
 
                     if let (Some(aabb), Some(transform)) = (maybe_aabb, maybe_transform) {
+                        let world_from_local = transform.affine();
+                        let bounding_radius =
+                            aabb.bounding_sphere_radius(&world_from_local.matrix3);
                         let mut visible = false;
                         for (frustum, frustum_visible_entities) in view_frusta
                             .iter()
@@ -455,7 +458,13 @@ pub fn check_dir_light_mesh_visibility(
                         {
                             // Disable near-plane culling, as a shadow caster could lie before the near plane.
                             if !has_no_frustum_culling
-                                && !frustum.intersects_obb(aabb, &transform.affine(), false, true)
+                                && !frustum.intersects_obb_with_bounding_sphere(
+                                    aabb,
+                                    &world_from_local,
+                                    bounding_radius,
+                                    false,
+                                    true,
+                                )
                             {
                                 continue;
                             }
@@ -632,12 +641,20 @@ pub fn check_point_light_mesh_visibility(
                                 return;
                             }
 
+                            let bounding_radius =
+                                aabb.bounding_sphere_radius(&model_to_world.matrix3);
                             for (frustum, visible_entities) in cubemap_frusta
                                 .iter()
                                 .zip(cubemap_visible_entities_local_queue.iter_mut())
                             {
                                 if has_no_frustum_culling
-                                    || frustum.intersects_obb(aabb, &model_to_world, true, true)
+                                    || frustum.intersects_obb_with_bounding_sphere(
+                                        aabb,
+                                        &model_to_world,
+                                        bounding_radius,
+                                        true,
+                                        true,
+                                    )
                                 {
                                     view_visibility.set_visible();
                                     visible_entities.push(entity);
@@ -725,7 +742,13 @@ pub fn check_point_light_mesh_visibility(
                             }
 
                             if has_no_frustum_culling
-                                || frustum.intersects_obb(aabb, &model_to_world, true, true)
+                                || frustum.intersects_obb_with_bounding_sphere(
+                                    aabb,
+                                    &model_to_world,
+                                    aabb.bounding_sphere_radius(&model_to_world.matrix3),
+                                    true,
+                                    true,
+                                )
                             {
                                 view_visibility.set_visible();
                                 spot_visible_entities_local_queue.push(entity);
